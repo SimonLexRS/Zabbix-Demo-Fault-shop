@@ -116,17 +116,25 @@ def provision(api: Api, cfg: dict, template_source: str) -> dict:
 	result = {'version': version, 'hostid': hostid, 'host': f'host {action}', 'groupid': groupid, 'apm': 'deshabilitado'}
 
 	if cfg['apm_enabled']:
-		apm_template = template_id(api, cfg['apm_template'])
-		if not apm_template:
-			result['apm'] = f'template "{cfg["apm_template"]}" no existe en este Zabbix: host APM omitido'
+		# First template of the list that exists: "Generic OpenTelemetry by OTLP" in Zabbix 8.0 APM, then older names.
+		candidates = [name.strip() for name in cfg['apm_template'].split(',') if name.strip()]
+		found = api('template.get', {'filter': {'host': candidates}, 'output': ['templateid', 'host'],
+			'selectMacros': ['macro']})
+		by_name = {t['host']: t for t in found}
+		chosen = next((by_name[name] for name in candidates if name in by_name), None)
+
+		if not chosen:
+			result['apm'] = f'ninguno de los templates {candidates} existe en este Zabbix: host APM omitido'
 		else:
+			# The application is the OpenTelemetry service.namespace: set every namespace macro the template has.
+			names = {'{$OTLP.NAMESPACE}'} | {m['macro'] for m in chosen.get('macros', []) if 'NAMESPACE' in m['macro']}
+			macros = [{'macro': name, 'value': cfg['namespace']} for name in sorted(names)]
 			try:
-				apm_hostid, apm_action = upsert_host(api, cfg['apm_host'], groupid, apm_template,
-					macros=[{'macro': '{$OTLP.NAMESPACE}', 'value': cfg['namespace']}],
+				apm_hostid, apm_action = upsert_host(api, cfg['apm_host'], groupid, chosen['templateid'], macros=macros,
 					tags=[{'tag': 'app', 'value': 'fault-shop'}, {'tag': 'apm', 'value': 'otlp'}],
 					description='Fault Shop en Zabbix APM: trazas OpenTelemetry (ClickHouse) del namespace '
 						f'{cfg["namespace"]}.')
-				result['apm'] = f'host APM {apm_action}'
+				result['apm'] = f'host APM {apm_action} con "{chosen["host"]}" y {", ".join(sorted(names))}'
 				result['apm_hostid'] = apm_hostid
 			except ZabbixError as error:
 				result['apm'] = f'host APM no creado: {error}'

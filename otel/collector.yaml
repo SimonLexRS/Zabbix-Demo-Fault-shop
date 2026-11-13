@@ -1,0 +1,31 @@
+# Browser telemetry (RUM) of the store: the page sends OTLP/HTTP to /otlp, nginx forwards it here, and this Collector
+# forwards it over gRPC to the APM receiver (Zabbix 8.0 proxy with APM collector, which only accepts gRPC on 4317).
+# The backend services do not use it: they send straight to OTEL_EXPORTER_OTLP_ENDPOINT.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  otlp:
+    endpoint: ${env:APM_GRPC_ENDPOINT}
+    tls:
+      insecure: ${env:APM_TLS_INSECURE}
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp]

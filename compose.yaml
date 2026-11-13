@@ -20,9 +20,10 @@ x-service: &service
       max-file: "3"
 
 # Destination of the telemetry: set it in Dokploy (Environment) or in .env. See README "Destino APM".
+# Default: the zabbix-proxy-apm of the Zabbix Demo stack (OTLP gRPC) published on port 4317 of this same host.
 x-otel: &otel
-  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
-  OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4317}
+  OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-grpc}
   OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
   OTEL_TRACES_EXPORTER: ${OTEL_TRACES_EXPORTER:-otlp}
   OTEL_METRICS_EXPORTER: ${OTEL_METRICS_EXPORTER:-none}
@@ -39,13 +40,14 @@ services:
     # Dokploy: Domains -> service "web", port 80. Plain Docker publishes it with compose.local.yaml.
     expose: ["80"]
     environment:
-      # Browser spans (RUM) go to /otlp of the store; nginx forwards them here. Must be an OTLP/HTTP receiver.
-      RUM_OTLP_HTTP_ENDPOINT: ${RUM_OTLP_HTTP_ENDPOINT:-http://host.docker.internal:4318}
+      # Browser spans (RUM) go to /otlp of the store; nginx forwards them here. Must be an OTLP/HTTP receiver:
+      # the otel-collector below, which relays them over gRPC to the APM proxy.
+      RUM_OTLP_HTTP_ENDPOINT: ${RUM_OTLP_HTTP_ENDPOINT:-http://otel-collector:4318}
       NGINX_ENVSUBST_FILTER: ^RUM_
     volumes:
       - ./web:/usr/share/nginx/html:ro
       - ./nginx:/etc/nginx/templates:ro
-    depends_on: [shop]
+    depends_on: [shop, otel-collector]
     healthcheck:
       test: [CMD-SHELL, wget -qO- http://127.0.0.1/healthz || exit 1]
       interval: 15s
@@ -171,7 +173,7 @@ services:
       ZABBIX_PORT: ${ZABBIX_PORT:-10051}
       ZABBIX_DASHBOARD: ${ZABBIX_DASHBOARD:-1}
       ZABBIX_APM_ENABLED: ${ZABBIX_APM_ENABLED:-1}
-      ZABBIX_APM_TEMPLATE: ${ZABBIX_APM_TEMPLATE:-OpenTelemetry application by OTLP}
+      ZABBIX_APM_TEMPLATE: ${ZABBIX_APM_TEMPLATE:-Generic OpenTelemetry by OTLP,OpenTelemetry application by OTLP}
       ZABBIX_APM_HOST_NAME: ${ZABBIX_APM_HOST_NAME:-apm-fault-shop}
       ZABBIX_DRY_RUN: ${ZABBIX_DRY_RUN:-0}
       OTEL_SERVICE_NAMESPACE: ${OTEL_SERVICE_NAMESPACE:-fault-shop}
@@ -189,6 +191,18 @@ services:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
       interval: 15s
       retries: 5
+
+  # OTLP/HTTP -> OTLP/gRPC relay for the browser telemetry only (the Zabbix APM proxy accepts gRPC only).
+  otel-collector:
+    <<: *service
+    image: otel/opentelemetry-collector-contrib:0.115.0
+    command: [--config=/etc/otelcol/collector.yaml]
+    expose: ["4318"]
+    environment:
+      APM_GRPC_ENDPOINT: ${APM_GRPC_ENDPOINT:-${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4317}}
+      APM_TLS_INSECURE: ${APM_TLS_INSECURE:-true}
+    volumes:
+      - ./otel/collector.yaml:/etc/otelcol/collector.yaml:ro
 
   # Reachable only from this compose network; the password protects nothing and is not a secret.
   postgres:

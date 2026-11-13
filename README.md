@@ -24,8 +24,8 @@ flowchart LR
 
     ZB["zabbix-bridge"] -. "health, Redis, PostgreSQL,<br>nginx, faults" .-> W & S & C & K & Y & X & R & P
     ZB ==>|"API: template, hosts, dashboard<br>history.push cada 10 s"| Z["Zabbix 7.0+"]
-    S & C & K & Y & N ==>|"OTLP trazas + logs"| A["Proxy APM de Zabbix 8<br>u OTel Collector"]
-    W ==>|"/otlp (RUM)"| A
+    S & C & K & Y & N ==>|"OTLP gRPC :4317<br>trazas + logs"| A["zabbix-proxy-apm<br>(stack Zabbix Demo)"]
+    W -->|"/otlp (RUM)"| OC["otel-collector<br>HTTP → gRPC"] ==> A
     A --> H[("ClickHouse")]
     H --> Z
 ```
@@ -52,7 +52,7 @@ Todo lo hace `zabbix-bridge` al arrancar y es idempotente: se puede redesplegar 
 | Template | `Fault Shop by Zabbix sender` | 36 ítems trapper + regla LLD de servicios. Archivo: [`zabbix/template_fault_shop_sender.yaml`](zabbix/template_fault_shop_sender.yaml) |
 | Grupo de hosts | `Fault Shop` (`ZABBIX_HOST_GROUP`) | |
 | Host de la tienda | `Fault Shop` (`ZABBIX_HOST`) | Sin interfaz: los datos llegan por `history.push` |
-| Host APM | `apm-fault-shop` (`ZABBIX_APM_HOST_NAME`) | Enlazado a `OpenTelemetry application by OTLP` con `{$OTLP.NAMESPACE}=fault-shop`. Solo si ese template existe en tu Zabbix |
+| Host APM | `apm-fault-shop` (`ZABBIX_APM_HOST_NAME`) | Enlazado al primer template que exista de `Generic OpenTelemetry by OTLP`, `OpenTelemetry application by OTLP`, con sus macros de namespace = `fault-shop`. Se omite si no hay ninguno |
 | Dashboard | `Fault Shop · Estado y APM` | Página *Estado de la tienda* y página *APM y faults* |
 
 **Ítems** (claves `fshop.*`, cada 10 s):
@@ -83,11 +83,11 @@ Todo lo hace `zabbix-bridge` al arrancar y es idempotente: se puede redesplegar 
 | Fault inyectado: <switch> | Info | `last(fault[<switch>])>0`, tag `fault=<switch>` |
 | Fault: servicios apagados desde el panel | Warning | `last(fault.down_count)>0` |
 
-Los triggers de trazas (*Span duration is too big*, *High span error rate*, *No spans received*) los aporta el template OpenTelemetry de Zabbix APM en el host `apm-fault-shop`.
+Los triggers de trazas (latencia, tasa de errores, sin spans) los aporta el template OpenTelemetry de Zabbix APM en el host `apm-fault-shop`.
 
 ## 2. Despliegue en Dokploy
 
-**Requisitos**: Zabbix **7.0 o superior** accesible por HTTPS desde el servidor de Dokploy, y (para APM) un receptor OTLP alcanzable desde los contenedores (ver [sección 4](#4-destino-apm-opentelemetry--clickhouse)).
+**Requisitos**: Zabbix **7.0 o superior** accesible por HTTPS desde el servidor de Dokploy (p. ej. el stack [Zabbix-Demo](https://github.com/SimonLexRS/Zabbix-Demo)) y, para APM, el proxy `zabbix-proxy-apm` registrado con APM habilitado (ver [sección 4](#4-destino-apm-opentelemetry--clickhouse)).
 
 1. **Token de API en Zabbix**: *Users → API tokens → Create API token* para un usuario con rol **Super admin** (necesita importar templates y crear hosts y dashboards). Copia el token.
 2. **Dokploy → Project → Create Service → Compose**:
@@ -101,10 +101,10 @@ Los triggers de trazas (*Span duration is too big*, *High span error rate*, *No 
    ZABBIX_URL=https://zabbix.tu-dominio.com
    ZABBIX_API_TOKEN=<token del paso 1>
 
-   # APM (destino de trazas y logs OpenTelemetry -> ClickHouse)
-   OTEL_EXPORTER_OTLP_ENDPOINT=http://<proxy-apm-o-collector>:4317
+   # APM (destino de trazas y logs -> zabbix-proxy-apm del stack Zabbix Demo -> ClickHouse)
+   # Mismo VPS: estos son los valores por defecto. Otro servidor: http://<ip-del-vps>:4317
+   OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317
    OTEL_EXPORTER_OTLP_PROTOCOL=grpc
-   RUM_OTLP_HTTP_ENDPOINT=http://<collector>:4318
    ```
 
    El resto de variables tiene valores por defecto; la lista completa está en [`.env.example`](.env.example) y en la [sección 6](#6-variables-de-entorno).
@@ -147,41 +147,42 @@ Sin `ZABBIX_URL` la tienda funciona igual y el bridge solo expone `/api/metrics`
 
 Los servicios `shop`, `catalog`, `checkout`, `payment` y `notifier` arrancan con el agente OpenTelemetry de su lenguaje (sin código de telemetría propio) y envían **trazas y logs** por OTLP. `bank` (servicio "externo") y `loadgen` no se instrumentan a propósito. Nada en la tienda conoce ClickHouse: eso lo hace el receptor.
 
-Elige **uno** de estos destinos y ponlo en *Environment* (Dokploy) o en `.env`:
+### Con el stack "Zabbix Demo" en Dokploy (caso por defecto)
 
-**A) Proxy de Zabbix 8.0 con colector APM** (recibe OTLP **gRPC** y escribe en ClickHouse)
+En [Zabbix-Demo](https://github.com/SimonLexRS/Zabbix-Demo) **no hay un OpenTelemetry Collector**: el receptor es el servicio **`zabbix-proxy-apm`** (proxy de Zabbix 8.0 con `ZBX_STARTAPMCOLLECTOR=1`), que acepta **solo OTLP gRPC en el puerto 4317**, escribe en `clickhouse:8123` (base `zabbix`) y publica ese puerto en el host (`OTLP_PORT=4317`).
 
-```env
-OTEL_EXPORTER_OTLP_ENDPOINT=http://zabbix-proxy-apm.tu-red:4317
-OTEL_EXPORTER_OTLP_PROTOCOL=grpc
-```
+| Dato | Valor |
+|---|---|
+| Servicio receptor | `zabbix-proxy-apm` (stack Zabbix Demo) |
+| Protocolo / puerto | OTLP **gRPC** / **4317** (sin TLS) |
+| Fault Shop en el **mismo VPS** | `OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317` |
+| Fault Shop en **otro servidor** | `OTEL_EXPORTER_OTLP_ENDPOINT=http://<ip-del-vps>:4317` (abrir 4317/tcp solo a esa IP) |
+| Protocolo | `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` |
 
-Configuración del proxy (referencia, en su propio compose):
+**¿Por qué no `http://zabbix-proxy-apm:4317`?** Cada servicio Compose de Dokploy tiene su propia red y Dokploy le pone prefijo al nombre del contenedor (`<app>-zabbix-proxy-apm-1`), así que ese nombre no resuelve desde Fault Shop. El puerto publicado en el host sí, y `host.docker.internal` ya está mapeado a la IP del host en `compose.yaml` (`extra_hosts: host-gateway`). Estos son los **valores por defecto**: si ambos stacks están en el mismo VPS no hace falta definir nada de APM.
 
-```yaml
-ZBX_STARTAPMCOLLECTOR: 1
-ZBX_APMLISTENIP: 0.0.0.0
-ZBX_APMLISTENPORT: 4317
-ZBX_TELEMETRYPROVIDER_0: '{"provider":"clickhouse","url":"http://clickhouse:8123","db":"zabbix"}'
-```
+**Prerrequisitos en Zabbix** (una vez, ver README de Zabbix Demo → *Después del primer deploy*):
 
-**B) OpenTelemetry Collector** (`otelcol-contrib` con el exporter `clickhouse`, OTLP **HTTP**)
+1. *Administración → Proxies → Crear proxy*: nombre `zabbix-proxy-apm`, modo **Activo**, pestaña **APM** → **Data collection enabled**. Hasta entonces el proxy no abre el 4317 y los exportadores registran *connection refused*.
+2. *Administración → Data source → APM*: `http://clickhouse:8123`, base `zabbix`, usuario y clave de ClickHouse.
 
-```env
-OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.tu-red:4318
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-```
+**RUM (navegador)**: el navegador solo habla OTLP/HTTP, que el proxy no acepta. Por eso Fault Shop incluye un **`otel-collector` interno** ([`otel/collector.yaml`](otel/collector.yaml)): nginx reenvía `/otlp` → `otel-collector:4318` (HTTP) → gRPC a `APM_GRPC_ENDPOINT` (por defecto, el mismo `OTEL_EXPORTER_OTLP_ENDPOINT`). No hay que configurar nada más.
 
-El Collector escribe `zabbix.otel_traces` y `zabbix.otel_logs`; Zabbix los lee como fuente de datos APM.
+### Con otro receptor
+
+| Receptor | `OTEL_EXPORTER_OTLP_ENDPOINT` | `OTEL_EXPORTER_OTLP_PROTOCOL` |
+|---|---|---|
+| Proxy APM de Zabbix 8.0 (gRPC) | `http://<host>:4317` | `grpc` |
+| OpenTelemetry Collector con exporter `clickhouse` (HTTP) | `http://<host>:4318` | `http/protobuf` |
+
+Con un Collector propio que acepte HTTP puedes enviar RUM directo (`RUM_OTLP_HTTP_ENDPOINT=http://<collector>:4318`); si solo acepta gRPC, deja el `otel-collector` interno y pon `APM_GRPC_ENDPOINT=http://<collector>:4317`.
 
 **Notas**
 
-- Si el receptor está en el **mismo servidor** fuera de Docker, usa `http://host.docker.internal:4317|4318` (ya mapeado a la IP del host en el compose) y asegúrate de que escucha en la IP del bridge de Docker, no solo en `127.0.0.1`.
-- Si está en **otra stack de Dokploy**, usa el nombre del contenedor/servicio en la red `dokploy-network` o la IP/DNS privada del servidor.
-- Con TLS usa `https://...`; con autenticación, `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<token>`.
-- **RUM (navegador)**: `web/otel.js` envía spans a `/otlp` del propio sitio y nginx los reenvía a `RUM_OTLP_HTTP_ENDPOINT`. Debe ser un receptor **OTLP/HTTP** (4318): el proxy APM de Zabbix solo escucha gRPC, así que para RUM hace falta un Collector (opción B) o un receptor HTTP. El nombre debe resolver cuando arranca nginx.
-- **`service.namespace`** (`OTEL_SERVICE_NAMESPACE`, por defecto `fault-shop`) es la "aplicación" en Zabbix APM y es la macro `{$OTLP.NAMESPACE}` del host APM.
-- Métricas OTel desactivadas por defecto (`OTEL_METRICS_EXPORTER=none`); pon `otlp` si tu receptor las guarda.
+- Con TLS usa `https://...` (y `APM_TLS_INSECURE=false`); con autenticación, `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<token>`.
+- **`service.namespace`** (`OTEL_SERVICE_NAMESPACE`, por defecto `fault-shop`) es la "aplicación" en Zabbix APM; el bridge la pone en las macros de namespace del host APM.
+- Métricas OTel desactivadas por defecto (`OTEL_METRICS_EXPORTER=none`); pon `otlp` si quieres enviarlas (el proxy APM también guarda métricas).
+- Prueba rápida del receptor sin la tienda: `docker run --rm ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:latest traces --otlp-endpoint <ip-del-vps>:4317 --otlp-insecure --traces 5 --service smoke-api`.
 
 Comprobar que llegan trazas (en el servidor de ClickHouse):
 
@@ -241,7 +242,7 @@ Abre `/faults.html` y enciende una falla. Actúa en segundos, sobre los clientes
 | `ZABBIX_SERVER` / `ZABBIX_PORT` | — / `10051` | Server o proxy para `ZABBIX_TRANSPORT=sender` |
 | `ZABBIX_DASHBOARD` | `1` | Crear/actualizar el dashboard |
 | `ZABBIX_APM_ENABLED` | `1` | Crear el host APM |
-| `ZABBIX_APM_TEMPLATE` | `OpenTelemetry application by OTLP` | Template OTLP de Zabbix APM a enlazar |
+| `ZABBIX_APM_TEMPLATE` | `Generic OpenTelemetry by OTLP,OpenTelemetry application by OTLP` | Templates OTLP candidatos (se usa el primero que exista) |
 | `ZABBIX_APM_HOST_NAME` | `apm-fault-shop` | Nombre del host APM |
 | `ZABBIX_DRY_RUN` | `0` | `1` = no envía nada, solo lo escribe en el log |
 
@@ -249,13 +250,15 @@ Abre `/faults.html` y enciende una falla. Actúa en segundos, sobre los clientes
 
 | Variable | Por defecto | Uso |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://host.docker.internal:4318` | Receptor OTLP (proxy APM de Zabbix `:4317` o Collector `:4318`) |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | `grpc` para `:4317`, `http/protobuf` para `:4318` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://host.docker.internal:4317` | Receptor OTLP: `zabbix-proxy-apm` publicado en el host (o `http://<ip-del-vps>:4317`) |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | `grpc` para `:4317`, `http/protobuf` para un Collector en `:4318` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | — | Cabeceras de autenticación |
 | `OTEL_TRACES_EXPORTER` / `OTEL_LOGS_EXPORTER` / `OTEL_METRICS_EXPORTER` | `otlp` / `otlp` / `none` | Señales enviadas |
 | `OTEL_SERVICE_NAMESPACE` | `fault-shop` | `service.namespace` (aplicación en APM) y `{$OTLP.NAMESPACE}` |
 | `DEPLOY_ENV` | `demo` | `deployment.environment.name` |
-| `RUM_OTLP_HTTP_ENDPOINT` | `http://host.docker.internal:4318` | Receptor OTLP/HTTP para spans del navegador |
+| `RUM_OTLP_HTTP_ENDPOINT` | `http://otel-collector:4318` | Receptor OTLP/HTTP de los spans del navegador (el collector interno) |
+| `APM_GRPC_ENDPOINT` | = `OTEL_EXPORTER_OTLP_ENDPOINT` | A dónde reenvía el collector interno (gRPC) |
+| `APM_TLS_INSECURE` | `true` | `false` si `APM_GRPC_ENDPOINT` usa TLS |
 
 **Tienda**
 
@@ -284,9 +287,10 @@ Mismas claves, triggers y LLD que el modo push: un ítem HTTP agent `fshop.raw` 
 | `Zabbix x.y: se necesita 7.0 o superior` | `history.push` existe desde Zabbix 7.0. Para 6.x usa `ZABBIX_TRANSPORT=sender` + `ZABBIX_SERVER` e importa el template a mano |
 | `certificate verify failed` | Certificado autofirmado: `ZABBIX_TLS_INSECURE=1` |
 | Envío con rechazos durante el primer minuto | Normal: los ítems por servicio aparecen cuando Zabbix procesa la LLD. El bridge reenvía la LLD y el dashboard se completa solo |
-| Host APM omitido | Tu Zabbix no tiene el template `OpenTelemetry application by OTLP` (Zabbix APM). Instálalo o cambia `ZABBIX_APM_TEMPLATE` |
+| Host APM omitido | Tu Zabbix no tiene ninguno de los templates de `ZABBIX_APM_TEMPLATE`. Pon el nombre exacto del template OTLP de tu Zabbix |
+| Logs de los servicios: `connection refused` / `UNAVAILABLE` hacia `:4317` | El proxy `zabbix-proxy-apm` no está registrado como proxy activo o no tiene *APM → Data collection enabled*; o Fault Shop está en otro servidor y apunta a `host.docker.internal` |
 | No llegan trazas | Revisa `OTEL_EXPORTER_OTLP_ENDPOINT`/`PROTOCOL` (4317 = grpc, 4318 = http/protobuf) y que el receptor sea alcanzable desde la red de Docker. Los logs de cada servicio muestran errores del exporter |
-| `web` no arranca: `host not found in upstream` | `RUM_OTLP_HTTP_ENDPOINT` apunta a un nombre que no resuelve; corrígelo o déjalo en `http://host.docker.internal:4318` |
+| `web` no arranca: `host not found in upstream` | `RUM_OTLP_HTTP_ENDPOINT` apunta a un nombre que no resuelve; déjalo en `http://otel-collector:4318` |
 | `ZABBIX_TRANSPORT=sender` sin datos | Abre TCP 10051 hacia `ZABBIX_SERVER` |
 
 ## 9. Estructura y desarrollo
@@ -296,6 +300,7 @@ compose.yaml              servicios (Dokploy y Docker)
 compose.local.yaml        puertos publicados para Docker sin Dokploy
 .env.example              todas las variables
 nginx/default.conf.template   nginx: /api, /otlp (RUM), /healthz y stub_status interno :8081
+otel/collector.yaml       collector interno: RUM OTLP/HTTP -> gRPC al proxy APM
 web/                      páginas de la tienda, panel de fallas, RUM (otel.js)
 python/                   shop, checkout, notifier, bank, loadgen, faults
   zabbix_bridge.py        recolección + provisión + envío a Zabbix

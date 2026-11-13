@@ -4,7 +4,7 @@
 
 A small microservice store in Docker with a **fault panel** (`/faults.html`): switches that slow the database, fail payments or take a service down. It shows how each failure looks in **Zabbix** (items, triggers, dashboard) and in **Zabbix APM** (OpenTelemetry traces and logs stored in ClickHouse).
 
-Only a Zabbix URL and an API token are needed: on start, the `zabbix-bridge` container imports the template `Fault Shop by Zabbix sender`, creates the host group, the store host, the APM host (`OpenTelemetry application by OTLP`, `{$OTLP.NAMESPACE}=fault-shop`) and the dashboard `Fault Shop · Estado y APM`, then pushes values every 10 s with `history.push` (Zabbix 7.0+).
+Only a Zabbix URL and an API token are needed: on start, the `zabbix-bridge` container imports the template `Fault Shop by Zabbix sender`, creates the host group, the store host, the APM host (first existing of `Generic OpenTelemetry by OTLP`, `OpenTelemetry application by OTLP`, namespace macros = `fault-shop`) and the dashboard `Fault Shop · Estado y APM`, then pushes values every 10 s with `history.push` (Zabbix 7.0+).
 
 ## Dokploy
 
@@ -14,10 +14,12 @@ Only a Zabbix URL and an API token are needed: on start, the `zabbix-bridge` con
    ```env
    ZABBIX_URL=https://zabbix.example.com
    ZABBIX_API_TOKEN=<token>
-   OTEL_EXPORTER_OTLP_ENDPOINT=http://<zabbix-apm-proxy-or-collector>:4317
-   OTEL_EXPORTER_OTLP_PROTOCOL=grpc            # http/protobuf for a Collector on :4318
-   RUM_OTLP_HTTP_ENDPOINT=http://<collector>:4318
+   # APM receiver: service "zabbix-proxy-apm" of the Zabbix Demo stack, OTLP gRPC only, port 4317 published on the
+   # host. Another Compose stack = another network, so use the host port (these are the defaults):
+   OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317   # other server: http://<vps-ip>:4317
+   OTEL_EXPORTER_OTLP_PROTOCOL=grpc
    ```
+   Browser telemetry goes through the internal `otel-collector` (OTLP/HTTP → gRPC), nothing to set. In Zabbix the proxy `zabbix-proxy-apm` must be registered as an active proxy with *APM → Data collection enabled*.
 4. *Domains*: service `web`, port `80`. Deploy.
 5. Check the `zabbix-bridge` logs: `Provisión OK` then `Dashboard: … complete: True`.
 

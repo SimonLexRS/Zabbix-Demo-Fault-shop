@@ -54,7 +54,7 @@ CFG = {
 	'verify_tls': not flag('ZABBIX_TLS_INSECURE'),
 	'dashboard': flag('ZABBIX_DASHBOARD', '1'),
 	'apm_enabled': flag('ZABBIX_APM_ENABLED', '1'),
-	'apm_template': env('ZABBIX_APM_TEMPLATE', 'OpenTelemetry application by OTLP'),
+	'apm_template': env('ZABBIX_APM_TEMPLATE', 'Generic OpenTelemetry by OTLP,OpenTelemetry application by OTLP'),
 	'apm_host': env('ZABBIX_APM_HOST_NAME', 'apm-fault-shop'),
 	'namespace': env('OTEL_SERVICE_NAMESPACE', 'fault-shop'),
 	'dry_run': flag('ZABBIX_DRY_RUN'),
