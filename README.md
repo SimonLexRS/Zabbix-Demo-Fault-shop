@@ -83,7 +83,7 @@ Todo lo hace `zabbix-bridge` al arrancar y es idempotente: se puede redesplegar 
 | Fault inyectado: <switch> | Info | `last(fault[<switch>])>0`, tag `fault=<switch>` |
 | Fault: servicios apagados desde el panel | Warning | `last(fault.down_count)>0` |
 
-Los triggers de trazas (latencia, tasa de errores, sin spans) los aporta el template OpenTelemetry de Zabbix APM en el host `apm-fault-shop`.
+Los triggers de trazas (latencia, tasa de errores, sin spans) los aporta el template OpenTelemetry de Zabbix APM en el host `apm-fault-shop`. En Zabbix 8.0, `Generic OpenTelemetry by OTLP` consulta **todo** lo que hay en ClickHouse (no filtra por `service.namespace`): si otras aplicaciones envían OTLP al mismo proxy, sus spans también cuentan en ese host.
 
 ## 2. Despliegue en Dokploy
 
@@ -163,7 +163,12 @@ En [Zabbix-Demo](https://github.com/SimonLexRS/Zabbix-Demo) **no hay un OpenTele
 
 **Prerrequisitos en Zabbix** (una vez, ver README de Zabbix Demo → *Después del primer deploy*):
 
-1. *Administración → Proxies → Crear proxy*: nombre `zabbix-proxy-apm`, modo **Activo**, pestaña **APM** → **Data collection enabled**. Hasta entonces el proxy no abre el 4317 y los exportadores registran *connection refused*.
+1. *Administración → Proxies → Crear proxy*: nombre `zabbix-proxy-apm`, modo **Activo**, pestaña **APM** → **Data collection enabled**. Hasta entonces el proxy no abre el 4317 y los exportadores registran *connection refused*. Por API (Zabbix 8.0):
+
+   ```json
+   {"jsonrpc":"2.0","method":"proxy.create","id":1,
+    "params":{"name":"zabbix-proxy-apm","operating_mode":0,"apm":{"data_collection_status":1}}}
+   ```
 2. *Administración → Data source → APM*: `http://clickhouse:8123`, base `zabbix`, usuario y clave de ClickHouse.
 
 **RUM (navegador)**: el navegador solo habla OTLP/HTTP, que el proxy no acepta. Por eso Fault Shop incluye un **`otel-collector` interno** ([`otel/collector.yaml`](otel/collector.yaml)): nginx reenvía `/otlp` → `otel-collector:4318` (HTTP) → gRPC a `APM_GRPC_ENDPOINT` (por defecto, el mismo `OTEL_EXPORTER_OTLP_ENDPOINT`). No hay que configurar nada más.

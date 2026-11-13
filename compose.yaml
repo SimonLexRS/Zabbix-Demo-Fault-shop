@@ -195,7 +195,7 @@ services:
   # OTLP/HTTP -> OTLP/gRPC relay for the browser telemetry only (the Zabbix APM proxy accepts gRPC only).
   otel-collector:
     <<: *service
-    image: otel/opentelemetry-collector-contrib:0.115.0
+    image: otel/opentelemetry-collector-contrib:0.162.0
     command: [--config=/etc/otelcol/collector.yaml]
     expose: ["4318"]
     environment:
