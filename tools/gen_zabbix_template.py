@@ -198,6 +198,11 @@ def build(mode: str) -> dict:
 		('{$FAULTSHOP.NOTIFIER.MAX}', '60', 'Segundos sin ciclo del worker notifier.'),
 		('{$FAULTSHOP.ORDERS.WINDOW}', '3m', 'Ventana sin pedidos (con carga simulada activa) antes de alertar.'),
 	]
+	if not http:
+		# Zabbix 7/8 trapper items accept values only from {$TRAPPER.ALLOWED_HOSTS} (global default 127.0.0.1,::1).
+		# With history.push the address checked is the one of the Zabbix frontend (a Docker private IP).
+		macros.insert(0, ('{$TRAPPER.ALLOWED_HOSTS}', '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.1,::1',
+			'Orígenes permitidos para los ítems trapper (frontend con history.push o zabbix_sender). Redes privadas.'))
 	if http:
 		macros += [('{$FAULTSHOP.URL}', 'http://zabbix-bridge:8000', 'URL base del zabbix-bridge (sin / final).'),
 			('{$FAULTSHOP.INTERVAL}', '30s', 'Intervalo del HTTP agent.')]

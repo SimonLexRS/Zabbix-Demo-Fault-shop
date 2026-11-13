@@ -291,6 +291,7 @@ Mismas claves, triggers y LLD que el modo push: un ítem HTTP agent `fshop.raw` 
 | Log `Provisión falló … HTTP 4xx/5xx` o `Not authorised` | URL sin acceso desde el servidor de Dokploy, token inválido o usuario sin rol Super admin. El bridge reintenta (10 s → 60 s) |
 | `Zabbix x.y: se necesita 7.0 o superior` | `history.push` existe desde Zabbix 7.0. Para 6.x usa `ZABBIX_TRANSPORT=sender` + `ZABBIX_SERVER` e importa el template a mano |
 | `certificate verify failed` | Certificado autofirmado: `ZABBIX_TLS_INSECURE=1` |
+| Rechazos `Client IP is not in item's allowed hosts list` | Los ítems trapper solo aceptan valores de `{$TRAPPER.ALLOWED_HOSTS}` y con `history.push` se valida la IP del **frontend** de Zabbix. El template trae redes privadas por defecto; si tu frontend tiene IP pública, añádela en esa macro del host |
 | Envío con rechazos durante el primer minuto | Normal: los ítems por servicio aparecen cuando Zabbix procesa la LLD. El bridge reenvía la LLD y el dashboard se completa solo |
 | Host APM omitido | Tu Zabbix no tiene ninguno de los templates de `ZABBIX_APM_TEMPLATE`. Pon el nombre exacto del template OTLP de tu Zabbix |
 | Logs de los servicios: `connection refused` / `UNAVAILABLE` hacia `:4317` | El proxy `zabbix-proxy-apm` no está registrado como proxy activo o no tiene *APM → Data collection enabled*; o Fault Shop está en otro servidor y apunta a `host.docker.internal` |

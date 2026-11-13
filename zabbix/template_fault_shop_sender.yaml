@@ -600,6 +600,9 @@ zabbix_export:
         - tag: 'target'
           value: 'fault-shop'
       macros:
+        - macro: '{$TRAPPER.ALLOWED_HOSTS}'
+          value: '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.1,::1'
+          description: 'Orígenes permitidos para los ítems trapper (frontend con history.push o zabbix_sender). Redes privadas.'
         - macro: '{$FAULTSHOP.NODATA}'
           value: '2m'
           description: 'Tiempo sin datos del bridge antes de alertar.'
