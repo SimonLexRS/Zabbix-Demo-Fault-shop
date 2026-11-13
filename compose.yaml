@@ -1,0 +1,220 @@
+# Fault Shop: a small store whose failures you switch on and off by hand, monitored by Zabbix (zabbix-bridge: template,
+# host, triggers and dashboard created through the API) and traced with OpenTelemetry to Zabbix APM (ClickHouse).
+#
+#   Dokploy: Compose service from this repository, variables of .env.example in "Environment", domain -> web:80.
+#   Docker:  cp .env.example .env && docker compose -f compose.yaml -f compose.local.yaml up -d --build
+#
+# Browser -> web (nginx) -> shop -> catalog -> PostgreSQL
+#                                -> checkout -> catalog, payment -> bank (not instrumented), PostgreSQL
+#                                            -> Redis queue "orders" -> notifier
+# zabbix-bridge -> health of every service, Redis, PostgreSQL, nginx, fault switches -> Zabbix API (history.push)
+# Every instrumented service -> OTLP -> ${OTEL_EXPORTER_OTLP_ENDPOINT} (Zabbix APM proxy or OTel Collector -> ClickHouse)
+
+x-service: &service
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  restart: unless-stopped
+  logging:
+    options:
+      max-size: 10m
+      max-file: "3"
+
+# Destination of the telemetry: set it in Dokploy (Environment) or in .env. See README "Destino APM".
+x-otel: &otel
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
+  OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+  OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+  OTEL_TRACES_EXPORTER: ${OTEL_TRACES_EXPORTER:-otlp}
+  OTEL_METRICS_EXPORTER: ${OTEL_METRICS_EXPORTER:-none}
+  OTEL_LOGS_EXPORTER: ${OTEL_LOGS_EXPORTER:-otlp}
+  OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED: "true"
+  OTEL_NODE_ENABLED_INSTRUMENTATIONS: http,express,pg,undici
+  OTEL_NODE_RESOURCE_DETECTORS: env,host
+  FAULTS_FILE: /faults/faults.json
+
+services:
+  web:
+    <<: *service
+    image: nginx:1.29-alpine
+    # Dokploy: Domains -> service "web", port 80. Plain Docker publishes it with compose.local.yaml.
+    expose: ["80"]
+    environment:
+      # Browser spans (RUM) go to /otlp of the store; nginx forwards them here. Must be an OTLP/HTTP receiver.
+      RUM_OTLP_HTTP_ENDPOINT: ${RUM_OTLP_HTTP_ENDPOINT:-http://host.docker.internal:4318}
+      NGINX_ENVSUBST_FILTER: ^RUM_
+    volumes:
+      - ./web:/usr/share/nginx/html:ro
+      - ./nginx:/etc/nginx/templates:ro
+    depends_on: [shop]
+    healthcheck:
+      test: [CMD-SHELL, wget -qO- http://127.0.0.1/healthz || exit 1]
+      interval: 15s
+      retries: 5
+
+  shop:
+    <<: *service
+    build: ./python
+    command: opentelemetry-instrument waitress-serve --port 8000 --threads 16 shop:app
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: shop
+      # The panel reads its switches every few seconds and zabbix-bridge probes /health: not part of the store.
+      OTEL_PYTHON_FLASK_EXCLUDED_URLS: faults,health
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=${OTEL_SERVICE_NAMESPACE:-fault-shop},service.version=1.0.0,deployment.environment.name=${DEPLOY_ENV:-demo}
+    volumes: [faults:/faults]
+    depends_on: [redis, catalog, checkout]
+    healthcheck: &pyhealth
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 15s
+      retries: 5
+
+  catalog:
+    <<: *service
+    build: ./node
+    command: node --require @opentelemetry/auto-instrumentations-node/register catalog.js
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: catalog
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=${OTEL_SERVICE_NAMESPACE:-fault-shop},service.version=1.0.0,deployment.environment.name=${DEPLOY_ENV:-demo}
+      PGHOST: postgres
+      PGUSER: shop
+      PGPASSWORD: shop
+      PGDATABASE: shop
+    volumes: [faults:/faults:ro]
+    healthcheck: &nodehealth
+      test: [CMD-SHELL, wget -qO- http://127.0.0.1:8000/health || exit 1]
+      interval: 15s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  checkout:
+    <<: *service
+    build: ./python
+    command: opentelemetry-instrument waitress-serve --port 8000 --threads 16 checkout:app
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: checkout
+      OTEL_PYTHON_FLASK_EXCLUDED_URLS: health
+      # A second release with a defect: CHECKOUT_VERSION=1.1.0 (Dokploy Environment, then Deploy)
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=${OTEL_SERVICE_NAMESPACE:-fault-shop},service.version=${CHECKOUT_VERSION:-1.0.0},deployment.environment.name=${DEPLOY_ENV:-demo}
+      APP_VERSION: ${CHECKOUT_VERSION:-1.0.0}
+      DATABASE_URL: postgresql://shop:shop@postgres/shop
+    volumes: [faults:/faults:ro]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck: *pyhealth
+
+  payment:
+    <<: *service
+    build: ./node
+    command: node --require @opentelemetry/auto-instrumentations-node/register payment.js
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: payment
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=${OTEL_SERVICE_NAMESPACE:-fault-shop},service.version=1.0.0,deployment.environment.name=${DEPLOY_ENV:-demo}
+    volumes: [faults:/faults:ro]
+    healthcheck: *nodehealth
+
+  notifier:
+    <<: *service
+    build: ./python
+    command: opentelemetry-instrument python notifier.py
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: notifier
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=${OTEL_SERVICE_NAMESPACE:-fault-shop},service.version=1.0.0,deployment.environment.name=${DEPLOY_ENV:-demo}
+      # The worker polls the queue all the time: only the orders it processes become spans.
+      OTEL_PYTHON_DISABLED_INSTRUMENTATIONS: redis
+    volumes: [faults:/faults:ro]
+    depends_on: [redis]
+
+  # The card issuer: someone else's service, so it sends no telemetry and shows on the map as an external host.
+  bank:
+    <<: *service
+    build: ./python
+    command: python bank.py
+    environment:
+      FAULTS_FILE: /faults/faults.json
+    volumes: [faults:/faults:ro]
+
+  # Simulated customers, through the same nginx as the browser. Its rate is one of the switches of the panel.
+  loadgen:
+    <<: *service
+    build: ./python
+    command: python loadgen.py
+    environment:
+      FAULTS_FILE: /faults/faults.json
+      SHOP_URL: http://web
+    volumes: [faults:/faults:ro]
+    depends_on: [web]
+
+  # Zabbix integration: imports the template, creates host group, host, APM host and dashboard with the API token,
+  # then sends the measurements every ZABBIX_SEND_INTERVAL seconds. Without ZABBIX_URL it only serves /api/metrics.
+  zabbix-bridge:
+    <<: *service
+    build: ./python
+    command: python zabbix_bridge.py
+    expose: ["8000"]
+    environment:
+      ZABBIX_URL: ${ZABBIX_URL:-}
+      ZABBIX_API_TOKEN: ${ZABBIX_API_TOKEN:-}
+      ZABBIX_HOST: ${ZABBIX_HOST:-Fault Shop}
+      ZABBIX_HOST_GROUP: ${ZABBIX_HOST_GROUP:-Fault Shop}
+      ZABBIX_SEND_INTERVAL: ${ZABBIX_SEND_INTERVAL:-10}
+      ZABBIX_LLD_INTERVAL: ${ZABBIX_LLD_INTERVAL:-600}
+      ZABBIX_TLS_INSECURE: ${ZABBIX_TLS_INSECURE:-0}
+      ZABBIX_TRANSPORT: ${ZABBIX_TRANSPORT:-api}
+      ZABBIX_SERVER: ${ZABBIX_SERVER:-}
+      ZABBIX_PORT: ${ZABBIX_PORT:-10051}
+      ZABBIX_DASHBOARD: ${ZABBIX_DASHBOARD:-1}
+      ZABBIX_APM_ENABLED: ${ZABBIX_APM_ENABLED:-1}
+      ZABBIX_APM_TEMPLATE: ${ZABBIX_APM_TEMPLATE:-OpenTelemetry application by OTLP}
+      ZABBIX_APM_HOST_NAME: ${ZABBIX_APM_HOST_NAME:-apm-fault-shop}
+      ZABBIX_DRY_RUN: ${ZABBIX_DRY_RUN:-0}
+      OTEL_SERVICE_NAMESPACE: ${OTEL_SERVICE_NAMESPACE:-fault-shop}
+      FAULTS_FILE: /faults/faults.json
+      DATABASE_URL: postgresql://shop:shop@postgres/shop
+    volumes:
+      - faults:/faults:ro
+      - ./zabbix:/app/zabbix:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 15s
+      retries: 5
+
+  # Reachable only from this compose network; the password protects nothing and is not a secret.
+  postgres:
+    <<: *service
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: shop
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U shop]
+      interval: 3s
+      retries: 20
+
+  redis:
+    <<: *service
+    image: redis:8-alpine
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      retries: 5
+
+volumes:
+  faults:
+  pgdata:

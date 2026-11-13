@@ -1,0 +1,984 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 'a1995398eae7447a9f076e30ac10beba'
+      name: 'Templates/Applications'
+  templates:
+    - uuid: '256d9e1347d24b09bd60f1e2678ef5e0'
+      template: 'Fault Shop by HTTP'
+      name: 'Fault Shop by HTTP'
+      description: 'Fault Shop: tienda demo de microservicios con panel de fallas. Datos por HTTP agent desde {$FAULTSHOP.URL}/api/metrics. Las trazas OpenTelemetry van al host APM (template OpenTelemetry application by OTLP). https://github.com/SimonLexRS/Zabbix-Demo-Fault-shop'
+      groups:
+        - name: 'Templates/Applications'
+      items:
+        - uuid: '188c642e4827491982e63eb3c8ed5a2f'
+          name: 'Fault Shop: datos crudos (/api/metrics)'
+          type: 'HTTP_AGENT'
+          key: 'fshop.raw'
+          delay: '{$FAULTSHOP.INTERVAL}'
+          history: '0'
+          value_type: 'TEXT'
+          trends: '0'
+          url: '{$FAULTSHOP.URL}/api/metrics'
+          timeout: '10s'
+          tags:
+            - tag: 'component'
+              value: 'raw'
+        - uuid: '80572a9576304c218c0b08ef4d21ef30'
+          name: 'Fault Shop: latido del bridge'
+          type: 'DEPENDENT'
+          key: 'fshop.bridge.heartbeat'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          units: 'unixtime'
+          description: 'Hora de la última recolección de zabbix-bridge. Sin datos = la app no está enviando.'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.bridge[''heartbeat'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'general'
+          triggers:
+            - uuid: '045b6020df314654b46d4122743b2a78'
+              expression: 'nodata(/Fault Shop by HTTP/fshop.bridge.heartbeat,{$FAULTSHOP.NODATA})=1'
+              name: 'Fault Shop: zabbix-bridge sin datos'
+              priority: 'HIGH'
+              description: 'El bridge dejó de enviar (contenedor detenido, sin red hacia Zabbix o token inválido). Los demás triggers de este host dependen de este.'
+              tags:
+                - tag: 'component'
+                  value: 'general'
+        - uuid: '9aeab17b4de1416cb03b3107e7df9c15'
+          name: 'Redis: disponible'
+          type: 'DEPENDENT'
+          key: 'fshop.redis.up'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          valuemap:
+            name: 'Fault Shop: estado'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.redis[''up'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'redis'
+          triggers:
+            - uuid: '004f4af80fcd451d895dbc2b00e48fd8'
+              expression: 'max(/Fault Shop by HTTP/fshop.redis.up,#2)=0'
+              name: 'Redis: caído'
+              priority: 'DISASTER'
+              description: 'Sin Redis no hay carritos ni cola de e-mails.'
+              dependencies:
+                - name: 'Fault Shop: zabbix-bridge sin datos'
+                  expression: 'nodata(/Fault Shop by HTTP/fshop.bridge.heartbeat,{$FAULTSHOP.NODATA})=1'
+              tags:
+                - tag: 'component'
+                  value: 'redis'
+        - uuid: '4abe32e8f65c412cb82984b89bc7043b'
+          name: 'Redis: pedidos en cola (orders)'
+          type: 'DEPENDENT'
+          key: 'fshop.redis.queue_len'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.redis[''queue_len'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'redis'
+          triggers:
+            - uuid: '69291cdd132d4b74bfb07d0e618e89ef'
+              expression: 'min(/Fault Shop by HTTP/fshop.redis.queue_len,2m)>{$FAULTSHOP.QUEUE.MAX}'
+              name: 'Cola de e-mails acumulada (> {$FAULTSHOP.QUEUE.MAX} pedidos)'
+              opdata: 'En cola: {ITEM.LASTVALUE1}'
+              priority: 'AVERAGE'
+              description: 'notifier no procesa al ritmo de los pedidos: fault "Cola de e-mail lenta" o notifier caído.'
+              dependencies:
+                - name: 'Fault Shop: zabbix-bridge sin datos'
+                  expression: 'nodata(/Fault Shop by HTTP/fshop.bridge.heartbeat,{$FAULTSHOP.NODATA})=1'
+              tags:
+                - tag: 'component'
+                  value: 'notifier'
+        - uuid: '0fda1417e7374d648445d7e3c4070f66'
+          name: 'Redis: carritos abiertos'
+          type: 'DEPENDENT'
+          key: 'fshop.redis.carts'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.redis[''carts'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'redis'
+        - uuid: '03b991e7b99d4b548a15b5afe4043df3'
+          name: 'Redis: memoria usada'
+          type: 'DEPENDENT'
+          key: 'fshop.redis.used_memory'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          units: 'B'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.redis[''used_memory'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'redis'
+        - uuid: '699e2c35473d43b1bdee351c1e94a509'
+          name: 'Redis: clientes conectados'
+          type: 'DEPENDENT'
+          key: 'fshop.redis.clients'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.redis[''clients'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'redis'
+        - uuid: 'a3d523007b894597bc10a6e7ce46b5bd'
+          name: 'Redis: operaciones por segundo'
+          type: 'DEPENDENT'
+          key: 'fshop.redis.ops_per_sec'
+          delay: '0'
+          value_type: 'FLOAT'
+          units: 'ops'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.redis[''ops_per_sec'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'redis'
+        - uuid: 'c220e6e445f24088976d085175079eca'
+          name: 'PostgreSQL: disponible'
+          type: 'DEPENDENT'
+          key: 'fshop.pg.up'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          valuemap:
+            name: 'Fault Shop: estado'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.postgres[''up'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'postgres'
+          triggers:
+            - uuid: 'f61ef466a0104f22bc53fb9968accdbf'
+              expression: 'max(/Fault Shop by HTTP/fshop.pg.up,#2)=0'
+              name: 'PostgreSQL: caído'
+              priority: 'DISASTER'
+              dependencies:
+                - name: 'Fault Shop: zabbix-bridge sin datos'
+                  expression: 'nodata(/Fault Shop by HTTP/fshop.bridge.heartbeat,{$FAULTSHOP.NODATA})=1'
+              tags:
+                - tag: 'component'
+                  value: 'postgres'
+        - uuid: 'a70e068f081643c8802fed8f8eb97a71'
+          name: 'PostgreSQL: tiempo de consulta del bridge'
+          type: 'DEPENDENT'
+          key: 'fshop.pg.rt_ms'
+          delay: '0'
+          value_type: 'FLOAT'
+          units: 'ms'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.postgres[''rt_ms'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'postgres'
+        - uuid: '744c98bd2f1f45318c27bcc833f33ca8'
+          name: 'PostgreSQL: conexiones'
+          type: 'DEPENDENT'
+          key: 'fshop.pg.connections'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.postgres[''connections'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'postgres'
+          triggers:
+            - uuid: 'f5970e8e56444c24985b24c9e8a68abc'
+              expression: 'min(/Fault Shop by HTTP/fshop.pg.connections,5m)>{$FAULTSHOP.PG.CONN.MAX}'
+              name: 'PostgreSQL: demasiadas conexiones (> {$FAULTSHOP.PG.CONN.MAX})'
+              opdata: 'Conexiones: {ITEM.LASTVALUE1}'
+              priority: 'WARNING'
+              tags:
+                - tag: 'component'
+                  value: 'postgres'
+        - uuid: '76b93244cc644e5597002cdbc50edca3'
+          name: 'PostgreSQL: tamaño de la base'
+          type: 'DEPENDENT'
+          key: 'fshop.pg.db_size'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          units: 'B'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.postgres[''db_size'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'postgres'
+        - uuid: '19dff5e4febc46ab80c7359617969e9d'
+          name: 'Negocio: pedidos totales'
+          type: 'DEPENDENT'
+          key: 'fshop.orders.total'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.orders[''total'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'negocio'
+        - uuid: 'a74faa941f504ceda3b1cc711f994245'
+          name: 'Negocio: pedidos por minuto'
+          type: 'DEPENDENT'
+          key: 'fshop.orders.per_min'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          units: 'opm'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.orders[''per_min'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'negocio'
+        - uuid: 'a4ea96c531ee4e8d9249ca790fd46415'
+          name: 'Negocio: pedidos últimos 5 min'
+          type: 'DEPENDENT'
+          key: 'fshop.orders.last5m'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.orders[''last5m'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'negocio'
+        - uuid: '55764a89f7454d378203be96067013fa'
+          name: 'Negocio: ventas últimos 5 min'
+          type: 'DEPENDENT'
+          key: 'fshop.orders.revenue_5m'
+          delay: '0'
+          value_type: 'FLOAT'
+          units: 'USD'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.orders[''revenue_5m'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'negocio'
+        - uuid: '47ff690ff3bd4e829b9eb5a09bf3f2e0'
+          name: 'Negocio: ticket medio últimos 5 min'
+          type: 'DEPENDENT'
+          key: 'fshop.orders.avg_ticket_5m'
+          delay: '0'
+          value_type: 'FLOAT'
+          units: 'USD'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.orders[''avg_ticket_5m'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'negocio'
+        - uuid: 'a93803e4954c448995cba18eec537cae'
+          name: 'nginx: conexiones activas'
+          type: 'DEPENDENT'
+          key: 'fshop.nginx.active'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.nginx[''active'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'nginx'
+        - uuid: '5520ef97c841403591a6756255015651'
+          name: 'nginx: peticiones por segundo'
+          type: 'DEPENDENT'
+          key: 'fshop.nginx.requests'
+          delay: '0'
+          value_type: 'FLOAT'
+          units: 'rps'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.nginx[''requests'']'
+              error_handler: 'DISCARD_VALUE'
+            - type: 'CHANGE_PER_SECOND'
+              parameters:
+                - ''
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'nginx'
+        - uuid: 'e6a602d1b27c43feb06bd85a892a1d58'
+          name: 'nginx: conexiones leyendo'
+          type: 'DEPENDENT'
+          key: 'fshop.nginx.reading'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.nginx[''reading'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'nginx'
+        - uuid: '5738de295fa54ea6bbfe52038be1a0f8'
+          name: 'nginx: conexiones escribiendo'
+          type: 'DEPENDENT'
+          key: 'fshop.nginx.writing'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.nginx[''writing'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'nginx'
+        - uuid: 'acde3b8c1a31497f848f9d1cbedd859f'
+          name: 'nginx: conexiones en espera'
+          type: 'DEPENDENT'
+          key: 'fshop.nginx.waiting'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.nginx[''waiting'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'nginx'
+        - uuid: '6e7a2bcf26024766a0bc5da68fc5f6af'
+          name: 'notifier: segundos desde su último ciclo'
+          type: 'DEPENDENT'
+          key: 'fshop.notifier.heartbeat_age'
+          delay: '0'
+          value_type: 'FLOAT'
+          units: 's'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.notifier[''heartbeat_age'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'notifier'
+          triggers:
+            - uuid: 'df00a074c85d4caba4749b0a92026714'
+              expression: 'min(/Fault Shop by HTTP/fshop.notifier.heartbeat_age,1m)>{$FAULTSHOP.NOTIFIER.MAX}'
+              name: 'notifier: sin actividad (> {$FAULTSHOP.NOTIFIER.MAX} s)'
+              opdata: 'Último ciclo hace {ITEM.LASTVALUE1}'
+              priority: 'HIGH'
+              description: 'El worker no completa su ciclo: contenedor detenido o bloqueado en un e-mail lento.'
+              dependencies:
+                - name: 'Fault Shop: zabbix-bridge sin datos'
+                  expression: 'nodata(/Fault Shop by HTTP/fshop.bridge.heartbeat,{$FAULTSHOP.NODATA})=1'
+              tags:
+                - tag: 'component'
+                  value: 'notifier'
+        - uuid: 'e57b2ac0d1ae4fb79db3e96a0de00e44'
+          name: 'Fault: Base de datos lenta'
+          type: 'DEPENDENT'
+          key: 'fshop.fault[db_slow_ms]'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          units: 'ms'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''db_slow_ms'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+          triggers:
+            - uuid: '478c58a6e9144d939a1211e22f308252'
+              expression: 'last(/Fault Shop by HTTP/fshop.fault[db_slow_ms])>0'
+              name: 'Fault inyectado: Base de datos lenta'
+              opdata: 'Valor: {ITEM.LASTVALUE1}'
+              priority: 'INFO'
+              description: 'Switch activo en el panel de fallas (/faults.html). Se resuelve al apagarlo o con "Volver a la normalidad".'
+              tags:
+                - tag: 'component'
+                  value: 'faults'
+                - tag: 'fault'
+                  value: 'db_slow_ms'
+        - uuid: 'be780679e0de4c2b8814ea878289e685'
+          name: 'Fault: Consultas N+1'
+          type: 'DEPENDENT'
+          key: 'fshop.fault[n_plus_one]'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          valuemap:
+            name: 'Fault Shop: sí/no'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''n_plus_one'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+          triggers:
+            - uuid: '3aebb1ec816f48bfb999292739d5dbea'
+              expression: 'last(/Fault Shop by HTTP/fshop.fault[n_plus_one])>0'
+              name: 'Fault inyectado: Consultas N+1'
+              priority: 'INFO'
+              description: 'Switch activo en el panel de fallas (/faults.html). Se resuelve al apagarlo o con "Volver a la normalidad".'
+              tags:
+                - tag: 'component'
+                  value: 'faults'
+                - tag: 'fault'
+                  value: 'n_plus_one'
+        - uuid: '4a38f57398d14e4ead76fe0a338e99c6'
+          name: 'Fault: Producto que rompe el código'
+          type: 'DEPENDENT'
+          key: 'fshop.fault[poison_product]'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          valuemap:
+            name: 'Fault Shop: sí/no'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''poison_product'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+          triggers:
+            - uuid: '53a0c7bdf70b4f8b883abbbe59da2f05'
+              expression: 'last(/Fault Shop by HTTP/fshop.fault[poison_product])>0'
+              name: 'Fault inyectado: Producto que rompe el código'
+              priority: 'INFO'
+              description: 'Switch activo en el panel de fallas (/faults.html). Se resuelve al apagarlo o con "Volver a la normalidad".'
+              tags:
+                - tag: 'component'
+                  value: 'faults'
+                - tag: 'fault'
+                  value: 'poison_product'
+        - uuid: '08b4c4e8872743e6a4ba8098b4e33b4a'
+          name: 'Fault: Sin stock'
+          type: 'DEPENDENT'
+          key: 'fshop.fault[out_of_stock]'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          valuemap:
+            name: 'Fault Shop: sí/no'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''out_of_stock'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+          triggers:
+            - uuid: '17b1a47039a44e5ba9645b4d0385ae1f'
+              expression: 'last(/Fault Shop by HTTP/fshop.fault[out_of_stock])>0'
+              name: 'Fault inyectado: Sin stock'
+              priority: 'INFO'
+              description: 'Switch activo en el panel de fallas (/faults.html). Se resuelve al apagarlo o con "Volver a la normalidad".'
+              tags:
+                - tag: 'component'
+                  value: 'faults'
+                - tag: 'fault'
+                  value: 'out_of_stock'
+        - uuid: 'fbd43b557de64ce993ff8d42f6be2bb6'
+          name: 'Fault: Pagos fallidos'
+          type: 'DEPENDENT'
+          key: 'fshop.fault[payment_fail_pct]'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          units: '%'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''payment_fail_pct'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+          triggers:
+            - uuid: '619d3c7cf5b1472796e5e09cd1f46928'
+              expression: 'last(/Fault Shop by HTTP/fshop.fault[payment_fail_pct])>0'
+              name: 'Fault inyectado: Pagos fallidos'
+              opdata: 'Valor: {ITEM.LASTVALUE1}'
+              priority: 'INFO'
+              description: 'Switch activo en el panel de fallas (/faults.html). Se resuelve al apagarlo o con "Volver a la normalidad".'
+              tags:
+                - tag: 'component'
+                  value: 'faults'
+                - tag: 'fault'
+                  value: 'payment_fail_pct'
+        - uuid: 'cd4bc65e79c9444b865dc712927b999b'
+          name: 'Fault: Banco lento'
+          type: 'DEPENDENT'
+          key: 'fshop.fault[bank_slow_ms]'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          units: 'ms'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''bank_slow_ms'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+          triggers:
+            - uuid: 'ab88d34be87e48fb92b8b0bb56045716'
+              expression: 'last(/Fault Shop by HTTP/fshop.fault[bank_slow_ms])>0'
+              name: 'Fault inyectado: Banco lento'
+              opdata: 'Valor: {ITEM.LASTVALUE1}'
+              priority: 'INFO'
+              description: 'Switch activo en el panel de fallas (/faults.html). Se resuelve al apagarlo o con "Volver a la normalidad".'
+              tags:
+                - tag: 'component'
+                  value: 'faults'
+                - tag: 'fault'
+                  value: 'bank_slow_ms'
+        - uuid: 'b1ede79287314eea86a880e541d3d1da'
+          name: 'Fault: Checkout con CPU'
+          type: 'DEPENDENT'
+          key: 'fshop.fault[cpu_burn_ms]'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          units: 'ms'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''cpu_burn_ms'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+          triggers:
+            - uuid: '26814149a9f44afa89bed3f7c0756e50'
+              expression: 'last(/Fault Shop by HTTP/fshop.fault[cpu_burn_ms])>0'
+              name: 'Fault inyectado: Checkout con CPU'
+              opdata: 'Valor: {ITEM.LASTVALUE1}'
+              priority: 'INFO'
+              description: 'Switch activo en el panel de fallas (/faults.html). Se resuelve al apagarlo o con "Volver a la normalidad".'
+              tags:
+                - tag: 'component'
+                  value: 'faults'
+                - tag: 'fault'
+                  value: 'cpu_burn_ms'
+        - uuid: '0277454ad31847f298b2b11a87d70494'
+          name: 'Fault: Cola de e-mail lenta'
+          type: 'DEPENDENT'
+          key: 'fshop.fault[notifier_slow_ms]'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          units: 'ms'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''notifier_slow_ms'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+          triggers:
+            - uuid: '57eb50a0d54644a29f6b364d302e35b2'
+              expression: 'last(/Fault Shop by HTTP/fshop.fault[notifier_slow_ms])>0'
+              name: 'Fault inyectado: Cola de e-mail lenta'
+              opdata: 'Valor: {ITEM.LASTVALUE1}'
+              priority: 'INFO'
+              description: 'Switch activo en el panel de fallas (/faults.html). Se resuelve al apagarlo o con "Volver a la normalidad".'
+              tags:
+                - tag: 'component'
+                  value: 'faults'
+                - tag: 'fault'
+                  value: 'notifier_slow_ms'
+        - uuid: '9ecb9ac6eb3748408b7b36ff10183d2d'
+          name: 'Fault: E-mails fallan'
+          type: 'DEPENDENT'
+          key: 'fshop.fault[notifier_fail]'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          valuemap:
+            name: 'Fault Shop: sí/no'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''notifier_fail'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+          triggers:
+            - uuid: 'e2ebb5a536914ab19d5b0e8786aeafb6'
+              expression: 'last(/Fault Shop by HTTP/fshop.fault[notifier_fail])>0'
+              name: 'Fault inyectado: E-mails fallan'
+              priority: 'INFO'
+              description: 'Switch activo en el panel de fallas (/faults.html). Se resuelve al apagarlo o con "Volver a la normalidad".'
+              tags:
+                - tag: 'component'
+                  value: 'faults'
+                - tag: 'fault'
+                  value: 'notifier_fail'
+        - uuid: '57c1cb121e5a45e28577a729a5e455dc'
+          name: 'Fault: Error JavaScript en "Agregar al carrito"'
+          type: 'DEPENDENT'
+          key: 'fshop.fault[js_error]'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          valuemap:
+            name: 'Fault Shop: sí/no'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''js_error'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+          triggers:
+            - uuid: '63dd70c9a9314af9b434b75965246ff4'
+              expression: 'last(/Fault Shop by HTTP/fshop.fault[js_error])>0'
+              name: 'Fault inyectado: Error JavaScript en "Agregar al carrito"'
+              priority: 'INFO'
+              description: 'Switch activo en el panel de fallas (/faults.html). Se resuelve al apagarlo o con "Volver a la normalidad".'
+              tags:
+                - tag: 'component'
+                  value: 'faults'
+                - tag: 'fault'
+                  value: 'js_error'
+        - uuid: 'eb182dc751dc4f5a8423ff81c0c1530a'
+          name: 'Fault: Clientes simulados por segundo'
+          type: 'DEPENDENT'
+          key: 'fshop.fault[load_rps]'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          units: 'rps'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''load_rps'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+        - uuid: '82ce43ad863f4aa7bab48d81f19e54e5'
+          name: 'Fault: servicios apagados desde el panel'
+          type: 'DEPENDENT'
+          key: 'fshop.fault.down'
+          delay: '0'
+          value_type: 'CHAR'
+          trends: '0'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''down'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+        - uuid: 'dbc6b85659ec4893aa991c1ffa53a846'
+          name: 'Fault: cantidad de servicios apagados'
+          type: 'DEPENDENT'
+          key: 'fshop.fault.down_count'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''down_count'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+          triggers:
+            - uuid: '517dcefa5d8e4cf68216bd101c75c0e4'
+              expression: 'last(/Fault Shop by HTTP/fshop.fault.down_count)>0'
+              name: 'Fault: servicios apagados desde el panel'
+              opdata: 'Apagados: {ITEM.LASTVALUE1}'
+              priority: 'WARNING'
+              description: 'El panel de fallas tiene servicios en "down" (503 o conexión cerrada).'
+              tags:
+                - tag: 'component'
+                  value: 'faults'
+                - tag: 'fault'
+                  value: 'down'
+        - uuid: '502c289eb75f4559b20492c7a8899b7c'
+          name: 'Fault: switches activos'
+          type: 'DEPENDENT'
+          key: 'fshop.fault.active_count'
+          delay: '0'
+          value_type: 'UNSIGNED'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.faults[''active_count'']'
+              error_handler: 'DISCARD_VALUE'
+          master_item:
+            key: 'fshop.raw'
+          tags:
+            - tag: 'component'
+              value: 'faults'
+      discovery_rules:
+        - uuid: '01c2f1e06d5d4853a761bd6fecaa12fa'
+          name: 'Servicios de la tienda'
+          type: 'DEPENDENT'
+          key: 'fshop.svc.discovery'
+          delay: '0'
+          description: 'Servicios HTTP de Fault Shop con health check (web, shop, catalog, checkout, payment, bank).'
+          item_prototypes:
+            - uuid: '4100e9284d1341d196c097fb586dbdd0'
+              name: 'Servicio {#SVC}: disponible'
+              type: 'DEPENDENT'
+              key: 'fshop.svc.up[{#SVC}]'
+              delay: '0'
+              value_type: 'UNSIGNED'
+              valuemap:
+                name: 'Fault Shop: estado'
+              preprocessing:
+                - type: 'JSONPATH'
+                  parameters:
+                    - '$.services[''{#SVC}''].up'
+                  error_handler: 'DISCARD_VALUE'
+              master_item:
+                key: 'fshop.raw'
+              tags:
+                - tag: 'component'
+                  value: 'servicios'
+                - tag: 'servicio'
+                  value: '{#SVC}'
+              trigger_prototypes:
+                - uuid: '5d18b436b6084f64a199086496d613b5'
+                  expression: 'max(/Fault Shop by HTTP/fshop.svc.up[{#SVC}],#2)=0'
+                  name: 'Servicio {#SVC}: caído'
+                  priority: 'HIGH'
+                  description: '{#ROLE}. El health check no responde 200: fault "down" del panel, contenedor detenido o error.'
+                  dependencies:
+                    - name: 'Fault Shop: zabbix-bridge sin datos'
+                      expression: 'nodata(/Fault Shop by HTTP/fshop.bridge.heartbeat,{$FAULTSHOP.NODATA})=1'
+                  tags:
+                    - tag: 'component'
+                      value: 'servicios'
+                    - tag: 'servicio'
+                      value: '{#SVC}'
+            - uuid: '39f62e868356409cb6d2190c4aeb9c6e'
+              name: 'Servicio {#SVC}: tiempo de respuesta'
+              type: 'DEPENDENT'
+              key: 'fshop.svc.rt_ms[{#SVC}]'
+              delay: '0'
+              value_type: 'FLOAT'
+              units: 'ms'
+              preprocessing:
+                - type: 'JSONPATH'
+                  parameters:
+                    - '$.services[''{#SVC}''].rt_ms'
+                  error_handler: 'DISCARD_VALUE'
+              master_item:
+                key: 'fshop.raw'
+              tags:
+                - tag: 'component'
+                  value: 'servicios'
+                - tag: 'servicio'
+                  value: '{#SVC}'
+              trigger_prototypes:
+                - uuid: '7cb1536a53fb47f6b02f37f7490014b2'
+                  expression: 'min(/Fault Shop by HTTP/fshop.svc.rt_ms[{#SVC}],1m)>{$FAULTSHOP.RT.MAX}'
+                  name: 'Servicio {#SVC}: health check lento (> {$FAULTSHOP.RT.MAX} ms)'
+                  opdata: 'Respuesta: {ITEM.LASTVALUE1}'
+                  priority: 'WARNING'
+                  tags:
+                    - tag: 'component'
+                      value: 'servicios'
+                    - tag: 'servicio'
+                      value: '{#SVC}'
+            - uuid: 'd4fc3739822c4dc7be9b301a9396e23a'
+              name: 'Servicio {#SVC}: código HTTP'
+              type: 'DEPENDENT'
+              key: 'fshop.svc.http_code[{#SVC}]'
+              delay: '0'
+              value_type: 'UNSIGNED'
+              preprocessing:
+                - type: 'JSONPATH'
+                  parameters:
+                    - '$.services[''{#SVC}''].http_code'
+                  error_handler: 'DISCARD_VALUE'
+              master_item:
+                key: 'fshop.raw'
+              tags:
+                - tag: 'component'
+                  value: 'servicios'
+                - tag: 'servicio'
+                  value: '{#SVC}'
+          master_item:
+            key: 'fshop.raw'
+          preprocessing:
+            - type: 'JSONPATH'
+              parameters:
+                - '$.discovery.services'
+      tags:
+        - tag: 'class'
+          value: 'application'
+        - tag: 'target'
+          value: 'fault-shop'
+      macros:
+        - macro: '{$FAULTSHOP.NODATA}'
+          value: '2m'
+          description: 'Tiempo sin datos del bridge antes de alertar.'
+        - macro: '{$FAULTSHOP.RT.MAX}'
+          value: '2000'
+          description: 'Tiempo máximo de respuesta del health check (ms).'
+        - macro: '{$FAULTSHOP.QUEUE.MAX}'
+          value: '20'
+          description: 'Pedidos en cola de e-mails tolerados durante 2 min.'
+        - macro: '{$FAULTSHOP.PG.CONN.MAX}'
+          value: '80'
+          description: 'Conexiones máximas a PostgreSQL.'
+        - macro: '{$FAULTSHOP.NOTIFIER.MAX}'
+          value: '60'
+          description: 'Segundos sin ciclo del worker notifier.'
+        - macro: '{$FAULTSHOP.ORDERS.WINDOW}'
+          value: '3m'
+          description: 'Ventana sin pedidos (con carga simulada activa) antes de alertar.'
+        - macro: '{$FAULTSHOP.URL}'
+          value: 'http://zabbix-bridge:8000'
+          description: 'URL base del zabbix-bridge (sin / final).'
+        - macro: '{$FAULTSHOP.INTERVAL}'
+          value: '30s'
+          description: 'Intervalo del HTTP agent.'
+      valuemaps:
+        - uuid: '4f727a80b4704d358b818347caf6967c'
+          name: 'Fault Shop: estado'
+          mappings:
+            - value: '0'
+              newvalue: 'Caído'
+            - value: '1'
+              newvalue: 'Disponible'
+        - uuid: 'fddce1e49c7f4492a48733e3e61d1c85'
+          name: 'Fault Shop: sí/no'
+          mappings:
+            - value: '0'
+              newvalue: 'No'
+            - value: '1'
+              newvalue: 'Sí'
+  triggers:
+    - uuid: '33932c6b87754ceab2f0755fece166b8'
+      expression: 'max(/Fault Shop by HTTP/fshop.orders.per_min,{$FAULTSHOP.ORDERS.WINDOW})=0 and last(/Fault Shop by HTTP/fshop.fault[load_rps])>0'
+      name: 'Fault Shop: sin pedidos con clientes simulados activos'
+      priority: 'AVERAGE'
+      description: 'loadgen genera tráfico pero ningún pedido llega a PostgreSQL: la compra está rota en algún punto (pagos, stock, servicio caído). Ver trazas en APM.'
+      dependencies:
+        - name: 'Fault Shop: zabbix-bridge sin datos'
+          expression: 'nodata(/Fault Shop by HTTP/fshop.bridge.heartbeat,{$FAULTSHOP.NODATA})=1'
+      tags:
+        - tag: 'component'
+          value: 'negocio'

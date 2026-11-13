@@ -1,0 +1,10 @@
+# Plain Docker (without Dokploy): publishes the store on the host.
+#   docker compose -f compose.yaml -f compose.local.yaml up -d --build
+# Optional: the zabbix-bridge on BRIDGE_PORT, for the HTTP agent template ("Fault Shop by HTTP").
+services:
+  web:
+    ports:
+      - "${SHOP_PORT:-18090}:80"
+  zabbix-bridge:
+    ports:
+      - "${BRIDGE_PORT:-18091}:8000"

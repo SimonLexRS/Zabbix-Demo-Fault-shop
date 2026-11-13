@@ -1,0 +1,40 @@
+# Rendered at start by the nginx image (envsubst over /etc/nginx/templates): only ${RUM_OTLP_HTTP_ENDPOINT} is
+# replaced; the nginx variables ($host...) are left alone because they are not environment variables.
+#
+# The store pages, the API under /api and the OTLP/HTTP receiver for browser telemetry (RUM) under /otlp: one origin,
+# so the browser needs no CORS and its requests carry the trace (traceparent) to the "shop" service.
+server {
+    listen 80;
+    root /usr/share/nginx/html;
+
+    location /api/ {
+        proxy_pass http://shop:8000/;
+        proxy_read_timeout 60s;
+    }
+
+    # Browser spans -> OTLP/HTTP receiver (Collector :4318). Set RUM_OTLP_HTTP_ENDPOINT in Dokploy / .env.
+    location /otlp/ {
+        proxy_pass ${RUM_OTLP_HTTP_ENDPOINT}/;
+        proxy_connect_timeout 5s;
+    }
+
+    location = /healthz {
+        access_log off;
+        default_type application/json;
+        return 200 '{"ok": true, "service": "web"}';
+    }
+
+    location ~* \.(html|js|css)$ {
+        add_header Cache-Control no-cache;
+    }
+}
+
+# Internal only (no Dokploy domain points here): nginx counters for zabbix-bridge.
+server {
+    listen 8081;
+    access_log off;
+
+    location = /nginx_status {
+        stub_status;
+    }
+}
