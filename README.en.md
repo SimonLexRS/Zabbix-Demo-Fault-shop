@@ -8,12 +8,15 @@ Only a Zabbix URL and an API token are needed: on start, the `zabbix-bridge` con
 
 ## Dokploy
 
-1. Zabbix: *Users → API tokens* → token of a **Super admin** user.
-2. Dokploy: *Create Service → Compose*, Git `https://github.com/SimonLexRS/Zabbix-Demo-Fault-shop.git`, branch `main`, compose path `./compose.yaml`.
+1. Zabbix: a **Super admin** user (with the Zabbix-Demo stack, `Admin` and its `ZBX_ADMIN_PASSWORD`) or an API token of one.
+2. Dokploy: *Create Service → Compose*, Git `https://github.com/SimonLexRS/Zabbix-Demo-Fault-shop.git`, branch `main`, compose path `./docker-compose.yml`.
 3. *Environment*:
    ```env
    ZABBIX_URL=https://zabbix.example.com
-   ZABBIX_API_TOKEN=<token>
+   ZABBIX_USER=Admin
+   ZABBIX_PASSWORD='<ZBX_ADMIN_PASSWORD>'   # or ZABBIX_API_TOKEN=<token>
+   ZABBIX_CH_PASSWORD='<CLICKHOUSE_PASSWORD of the Zabbix stack>'
+   # Several Zabbix stacks on one VPS: each publishes its APM proxy on its own OTLP_PORT; use that port below.
    # APM receiver: service "zabbix-proxy-apm" of the Zabbix Demo stack, OTLP gRPC only, port 4317 published on the
    # host. Another Compose stack = another network, so use the host port (these are the defaults):
    OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317   # other server: http://<vps-ip>:4317
@@ -33,7 +36,7 @@ Protect the domain with a Traefik `basicAuth` middleware (bcrypt hash, `removeHe
 
 ```sh
 cp .env.example .env    # set ZABBIX_URL, ZABBIX_API_TOKEN, OTEL_*
-docker compose -f compose.yaml -f compose.local.yaml up -d --build
+docker compose -f docker-compose.yml -f compose.local.yaml up -d --build
 ```
 
 Store on `:18090`, bridge metrics on `:18091/api/metrics`. All variables: [`.env.example`](.env.example). Pull alternative (HTTP agent): [`zabbix/template_fault_shop_http.yaml`](zabbix/template_fault_shop_http.yaml).

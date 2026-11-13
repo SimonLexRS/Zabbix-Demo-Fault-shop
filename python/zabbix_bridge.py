@@ -1,4 +1,5 @@
-"""zabbix-bridge: makes Fault Shop a Zabbix host with nothing to configure in Zabbix but an API token.
+"""zabbix-bridge: makes Fault Shop a Zabbix host with nothing to configure in Zabbix but an API token
+(ZABBIX_API_TOKEN) or a Super admin user (ZABBIX_USER / ZABBIX_PASSWORD).
 
 On start it imports the template, creates the host group, the store host, the APM host (OpenTelemetry template, if
 present) and the dashboard, through the Zabbix API. Then, every ZABBIX_SEND_INTERVAL seconds, it measures the store
@@ -44,6 +45,8 @@ def flag(name: str, default: str = '0') -> bool:
 CFG = {
 	'url': env('ZABBIX_URL'),
 	'token': env('ZABBIX_API_TOKEN'),
+	'user': env('ZABBIX_USER'),
+	'password': os.environ.get('ZABBIX_PASSWORD', ''),
 	'host': env('ZABBIX_HOST', 'Fault Shop'),
 	'host_group': env('ZABBIX_HOST_GROUP', 'Fault Shop'),
 	'interval': max(5, int(env('ZABBIX_SEND_INTERVAL', '10'))),
@@ -73,7 +76,7 @@ CFG = {
 	'port_http': int(env('BRIDGE_PORT', '8000')),
 }
 
-STATUS = {'zabbix': 'deshabilitado (sin ZABBIX_URL / ZABBIX_API_TOKEN)', 'provision': None, 'last_send': None,
+STATUS = {'zabbix': 'deshabilitado (sin ZABBIX_URL / ZABBIX_API_TOKEN o ZABBIX_USER+ZABBIX_PASSWORD)', 'provision': None, 'last_send': None,
 	'dashboard': None, 'errors': 0}
 LATEST = {'metrics': {}}
 http = requests.Session()
@@ -204,8 +207,10 @@ def deliver(api, values: list) -> dict:
 
 
 def run() -> None:
-	can_provision = bool(CFG['url'] and CFG['token']) and not CFG['dry_run']
-	api = zabbix_api.Api(CFG['url'], CFG['token'], CFG['verify_tls']) if CFG['url'] else None
+	has_auth = bool(CFG['token'] or (CFG['user'] and CFG['password']))
+	can_provision = bool(CFG['url'] and has_auth) and not CFG['dry_run']
+	api = zabbix_api.Api(CFG['url'], CFG['token'], CFG['verify_tls'], user=CFG['user'],
+		password=CFG['password']) if CFG['url'] else None
 
 	if CFG['dry_run']:
 		enabled = True

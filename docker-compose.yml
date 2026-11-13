@@ -2,7 +2,7 @@
 # host, triggers and dashboard created through the API) and traced with OpenTelemetry to Zabbix APM (ClickHouse).
 #
 #   Dokploy: Compose service from this repository, variables of .env.example in "Environment", domain -> web:80.
-#   Docker:  cp .env.example .env && docker compose -f compose.yaml -f compose.local.yaml up -d --build
+#   Docker:  cp .env.example .env && docker compose -f docker-compose.yml -f compose.local.yaml up -d --build
 #
 # Browser -> web (nginx) -> shop -> catalog -> PostgreSQL
 #                                -> checkout -> catalog, payment -> bank (not instrumented), PostgreSQL
@@ -21,6 +21,7 @@ x-service: &service
 
 # Destination of the telemetry: set it in Dokploy (Environment) or in .env. See README "Destino APM".
 # Default: the zabbix-proxy-apm of the Zabbix Demo stack (OTLP gRPC) published on port 4317 of this same host.
+# Several Zabbix stacks on the VPS: each uses its own OTLP_PORT, so set the port of the one this shop reports to.
 x-otel: &otel
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4317}
   OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-grpc}
@@ -166,6 +167,9 @@ services:
     environment:
       ZABBIX_URL: ${ZABBIX_URL:-}
       ZABBIX_API_TOKEN: ${ZABBIX_API_TOKEN:-}
+      # Instead of the token: a Super admin user (Zabbix-Demo stack: Admin / its ZBX_ADMIN_PASSWORD).
+      ZABBIX_USER: ${ZABBIX_USER:-}
+      ZABBIX_PASSWORD: ${ZABBIX_PASSWORD:-}
       ZABBIX_HOST: ${ZABBIX_HOST:-Fault Shop}
       ZABBIX_HOST_GROUP: ${ZABBIX_HOST_GROUP:-Fault Shop}
       ZABBIX_SEND_INTERVAL: ${ZABBIX_SEND_INTERVAL:-10}

@@ -28,7 +28,7 @@ ZABBIX_KPI_TIMEZONE=America/La_Paz                               # zona horaria 
 
 ```sh
 git clone https://github.com/SimonLexRS/zabbix-apm-dashboard.git && cd zabbix-apm-dashboard
-export ZABBIX_URL=https://<tu-zabbix> ZABBIX_API_TOKEN=<token>
+export ZABBIX_URL=https://<tu-zabbix> ZABBIX_API_TOKEN=<token>   # o ZABBIX_USER / ZABBIX_PASSWORD
 python3 scripts/zabbix-apm-app.py kpi-dashboard fault-shop      # crea/actualiza "KPIs fault-shop"
 ```
 
@@ -124,23 +124,29 @@ Los triggers de trazas (latencia, tasa de errores, sin spans) los aporta el temp
 
 **Requisitos**: Zabbix **7.0 o superior** accesible por HTTPS desde el servidor de Dokploy (p. ej. el stack [Zabbix-Demo](https://github.com/SimonLexRS/Zabbix-Demo)) y, para APM, el proxy `zabbix-proxy-apm` registrado con APM habilitado (ver [sección 4](#4-destino-apm-opentelemetry--clickhouse)).
 
-1. **Token de API en Zabbix**: *Users → API tokens → Create API token* para un usuario con rol **Super admin** (necesita importar templates y crear hosts y dashboards). Copia el token.
+1. **Credenciales de Zabbix**: un usuario con rol **Super admin** (necesita importar templates y crear hosts y dashboards). Con el stack Zabbix-Demo basta con `Admin` y su `ZBX_ADMIN_PASSWORD`: no hay que entrar a la UI. Alternativa: un token (*Users → API tokens*) en `ZABBIX_API_TOKEN`.
 2. **Dokploy → Project → Create Service → Compose**:
    - *Provider*: **Git** (o GitHub) → repositorio `https://github.com/SimonLexRS/Zabbix-Demo-Fault-shop.git`, rama `main`.
-   - *Compose Path*: `./compose.yaml`
+   - *Compose Path*: `./docker-compose.yml`
    - *Compose Type*: Docker Compose.
 3. **Environment** (pestaña *Environment* del servicio). Mínimo:
 
    ```env
    # Zabbix (destino de ítems, triggers, dashboard)
    ZABBIX_URL=https://zabbix.tu-dominio.com
-   ZABBIX_API_TOKEN=<token del paso 1>
+   ZABBIX_USER=Admin
+   ZABBIX_PASSWORD='<ZBX_ADMIN_PASSWORD del stack Zabbix>'   # o ZABBIX_API_TOKEN=<token>
 
    # APM (destino de trazas y logs -> zabbix-proxy-apm del stack Zabbix Demo -> ClickHouse)
-   # Mismo VPS: estos son los valores por defecto. Otro servidor: http://<ip-del-vps>:4317
+   # Mismo VPS: el OTLP_PORT de ESE stack Zabbix. Otro servidor: http://<ip-del-vps>:<OTLP_PORT>
    OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317
    OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+
+   # Business KPIs: el CLICKHOUSE_PASSWORD del stack Zabbix
+   ZABBIX_CH_PASSWORD='<CLICKHOUSE_PASSWORD>'
    ```
+
+   **Varios Zabbix en el mismo VPS** (un proyecto de Dokploy por Zabbix): cada stack publica su proxy APM en otro `OTLP_PORT` (4317, 4327...). El puerto de `OTEL_EXPORTER_OTLP_ENDPOINT` decide a qué Zabbix llegan las trazas: con 4317 por defecto irían al primero.
 
    El resto de variables tiene valores por defecto; la lista completa está en [`.env.example`](.env.example) y en la [sección 6](#6-variables-de-entorno).
 4. **Domains**: *Add Domain* → *Service Name* **`web`**, *Container Port* **`80`**, host p. ej. `shop.tu-dominio.com`, HTTPS con Let's Encrypt si quieres.
@@ -192,7 +198,7 @@ La tienda y su panel de fallas no tienen login propio. En Dokploy, *Security →
 ```sh
 git clone https://github.com/SimonLexRS/Zabbix-Demo-Fault-shop.git && cd Zabbix-Demo-Fault-shop
 cp .env.example .env        # edita ZABBIX_URL, ZABBIX_API_TOKEN y el destino OTEL_*
-docker compose -f compose.yaml -f compose.local.yaml up -d --build
+docker compose -f docker-compose.yml -f compose.local.yaml up -d --build
 docker compose logs -f zabbix-bridge
 ```
 
@@ -223,9 +229,9 @@ En [Zabbix-Demo](https://github.com/SimonLexRS/Zabbix-Demo) **no hay un OpenTele
 | Fault Shop en **otro servidor** | `OTEL_EXPORTER_OTLP_ENDPOINT=http://<ip-del-vps>:4317` (abrir 4317/tcp solo a esa IP) |
 | Protocolo | `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` |
 
-**¿Por qué no `http://zabbix-proxy-apm:4317`?** Cada servicio Compose de Dokploy tiene su propia red y Dokploy le pone prefijo al nombre del contenedor (`<app>-zabbix-proxy-apm-1`), así que ese nombre no resuelve desde Fault Shop. El puerto publicado en el host sí, y `host.docker.internal` ya está mapeado a la IP del host en `compose.yaml` (`extra_hosts: host-gateway`). Estos son los **valores por defecto**: si ambos stacks están en el mismo VPS no hace falta definir nada de APM.
+**¿Por qué no `http://zabbix-proxy-apm:4317`?** Cada servicio Compose de Dokploy tiene su propia red y Dokploy le pone prefijo al nombre del contenedor (`<app>-zabbix-proxy-apm-1`), así que ese nombre no resuelve desde Fault Shop. El puerto publicado en el host sí, y `host.docker.internal` ya está mapeado a la IP del host en `docker-compose.yml` (`extra_hosts: host-gateway`). Estos son los **valores por defecto**: si ambos stacks están en el mismo VPS no hace falta definir nada de APM.
 
-**Prerrequisitos en Zabbix** (una vez, ver README de Zabbix Demo → *Después del primer deploy*):
+**Prerrequisitos en Zabbix**: el stack Zabbix-Demo los hace solo en cada deploy (servicio `zabbix-setup`, ver su README → *Después del deploy*). Con otro Zabbix:
 
 1. *Administración → Proxies → Crear proxy*: nombre `zabbix-proxy-apm`, modo **Activo**, pestaña **APM** → **Data collection enabled**. Hasta entonces el proxy no abre el 4317 y los exportadores registran *connection refused*. Por API (Zabbix 8.0):
 
@@ -302,6 +308,7 @@ Abre `/faults.html` y enciende una falla. Actúa en segundos, sobre los clientes
 |---|---|---|
 | `ZABBIX_URL` | — | URL del frontend de Zabbix (se le añade `/api_jsonrpc.php`). Sin ella no se integra |
 | `ZABBIX_API_TOKEN` | — | Token de API de un Super admin |
+| `ZABBIX_USER` / `ZABBIX_PASSWORD` | — | En lugar del token: usuario Super admin (`user.login`; vuelve a entrar si la sesión expira) |
 | `ZABBIX_HOST` | `Fault Shop` | Host de la tienda (y prefijo del nombre del dashboard) |
 | `ZABBIX_HOST_GROUP` | `Fault Shop` | Grupo de hosts |
 | `ZABBIX_SEND_INTERVAL` | `10` | Segundos entre envíos |
@@ -324,7 +331,7 @@ Abre `/faults.html` y enciende una falla. Actúa en segundos, sobre los clientes
 
 | Variable | Por defecto | Uso |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://host.docker.internal:4317` | Receptor OTLP: `zabbix-proxy-apm` publicado en el host (o `http://<ip-del-vps>:4317`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://host.docker.internal:4317` | Receptor OTLP: `zabbix-proxy-apm` publicado en el host, en el `OTLP_PORT` de su stack (o `http://<ip-del-vps>:<puerto>`) |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | `grpc` para `:4317`, `http/protobuf` para un Collector en `:4318` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | — | Cabeceras de autenticación |
 | `OTEL_TRACES_EXPORTER` / `OTEL_LOGS_EXPORTER` / `OTEL_METRICS_EXPORTER` | `otlp` / `otlp` / `otlp` | Señales enviadas (las métricas alimentan los Business KPIs) |
@@ -373,7 +380,7 @@ Mismas claves, triggers y LLD que el modo push: un ítem HTTP agent `fshop.raw` 
 ## 9. Estructura y desarrollo
 
 ```
-compose.yaml              servicios (Dokploy y Docker)
+docker-compose.yml        servicios (Dokploy y Docker)
 compose.local.yaml        puertos publicados para Docker sin Dokploy
 .env.example              todas las variables
 nginx/default.conf.template   nginx: /api, /otlp (RUM), /healthz y stub_status interno :8081
