@@ -36,7 +36,9 @@ x-otel: &otel
 services:
   web:
     <<: *service
-    image: nginx:1.29-alpine
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
     # Dokploy: Domains -> service "web", port 80. Plain Docker publishes it with compose.local.yaml.
     expose: ["80"]
     environment:
@@ -44,9 +46,6 @@ services:
       # the otel-collector below, which relays them over gRPC to the APM proxy.
       RUM_OTLP_HTTP_ENDPOINT: ${RUM_OTLP_HTTP_ENDPOINT:-http://otel-collector:4318}
       NGINX_ENVSUBST_FILTER: ^RUM_
-    volumes:
-      - ./web:/usr/share/nginx/html:ro
-      - ./nginx:/etc/nginx/templates:ro
     depends_on: [shop, otel-collector]
     healthcheck:
       test: [CMD-SHELL, wget -qO- http://127.0.0.1/healthz || exit 1]
@@ -55,7 +54,9 @@ services:
 
   shop:
     <<: *service
-    build: ./python
+    build: &pybuild
+      context: .
+      dockerfile: python/Dockerfile
     command: opentelemetry-instrument waitress-serve --port 8000 --threads 16 shop:app
     environment:
       <<: *otel
@@ -93,7 +94,7 @@ services:
 
   checkout:
     <<: *service
-    build: ./python
+    build: *pybuild
     command: opentelemetry-instrument waitress-serve --port 8000 --threads 16 checkout:app
     environment:
       <<: *otel
@@ -122,7 +123,7 @@ services:
 
   notifier:
     <<: *service
-    build: ./python
+    build: *pybuild
     command: opentelemetry-instrument python notifier.py
     environment:
       <<: *otel
@@ -136,7 +137,7 @@ services:
   # The card issuer: someone else's service, so it sends no telemetry and shows on the map as an external host.
   bank:
     <<: *service
-    build: ./python
+    build: *pybuild
     command: python bank.py
     environment:
       FAULTS_FILE: /faults/faults.json
@@ -145,7 +146,7 @@ services:
   # Simulated customers, through the same nginx as the browser. Its rate is one of the switches of the panel.
   loadgen:
     <<: *service
-    build: ./python
+    build: *pybuild
     command: python loadgen.py
     environment:
       FAULTS_FILE: /faults/faults.json
@@ -157,7 +158,7 @@ services:
   # then sends the measurements every ZABBIX_SEND_INTERVAL seconds. Without ZABBIX_URL it only serves /api/metrics.
   zabbix-bridge:
     <<: *service
-    build: ./python
+    build: *pybuild
     command: python zabbix_bridge.py
     expose: ["8000"]
     environment:
@@ -181,7 +182,6 @@ services:
       DATABASE_URL: postgresql://shop:shop@postgres/shop
     volumes:
       - faults:/faults:ro
-      - ./zabbix:/app/zabbix:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -195,14 +195,14 @@ services:
   # OTLP/HTTP -> OTLP/gRPC relay for the browser telemetry only (the Zabbix APM proxy accepts gRPC only).
   otel-collector:
     <<: *service
-    image: otel/opentelemetry-collector-contrib:0.162.0
+    build:
+      context: .
+      dockerfile: otel/Dockerfile
     command: [--config=/etc/otelcol/collector.yaml]
     expose: ["4318"]
     environment:
       APM_GRPC_ENDPOINT: ${APM_GRPC_ENDPOINT:-${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4317}}
       APM_TLS_INSECURE: ${APM_TLS_INSECURE:-true}
-    volumes:
-      - ./otel/collector.yaml:/etc/otelcol/collector.yaml:ro
 
   # Reachable only from this compose network; the password protects nothing and is not a secret.
   postgres:
