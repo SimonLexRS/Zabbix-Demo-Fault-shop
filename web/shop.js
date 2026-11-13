@@ -7,10 +7,58 @@ localStorage.setItem('cart.id', cartId);
 
 export const money = (value) => value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
+// Administrator key of the fault panel (CONTROL_TOKEN), asked once and remembered in this browser.
+const KEY = 'controlToken';
+let askKey = null;
+
+export function controlKey() {
+	try {
+		return localStorage.getItem(KEY) ?? '';
+	} catch {
+		return '';
+	}
+}
+
+export function setControlKey(key) {
+	try {
+		key ? localStorage.setItem(KEY, key) : localStorage.removeItem(KEY);
+	} catch {
+		// Private window or blocked storage: the key lasts only for this call.
+	}
+}
+
+// The page that changes switches registers how to ask for the key: (message) => Promise<string | null>.
+export function onControlKeyNeeded(ask) {
+	askKey = ask;
+}
+
+async function request(path, options) {
+	const headers = { ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }) };
+	const key = controlKey();
+
+	if (key) {
+		headers['x-control-token'] = key;
+	}
+
+	return fetch('/api' + path, { ...options, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body) });
+}
+
 export async function api(path, options = {}) {
-	const response = await fetch('/api' + path, options.body === undefined ? options : {
-		...options, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options.body)
-	});
+	let response = await request(path, options);
+
+	// Wrong or missing administrator key: ask for it (up to 3 tries) and repeat the call.
+	for (let attempt = 0; response.status === 401 && askKey && attempt < 3; attempt++) {
+		setControlKey('');
+		const key = await askKey(attempt > 0);
+
+		if (!key) {
+			throw new Error('Administrator key required');
+		}
+
+		setControlKey(key);
+		response = await request(path, options);
+	}
+
 	const body = await response.json().catch(() => ({ error: response.statusText }));
 
 	if (!response.ok) {

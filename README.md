@@ -28,7 +28,7 @@ ZABBIX_KPI_TIMEZONE=America/La_Paz                               # zona horaria 
 
 ```sh
 git clone https://github.com/SimonLexRS/zabbix-apm-dashboard.git && cd zabbix-apm-dashboard
-export ZABBIX_URL=https://<tu-zabbix> ZABBIX_API_TOKEN=<token>   # o ZABBIX_USER / ZABBIX_PASSWORD
+export ZABBIX_URL=https://<tu-zabbix> ZABBIX_API_TOKEN=<token>
 python3 scripts/zabbix-apm-app.py kpi-dashboard fault-shop      # crea/actualiza "KPIs fault-shop"
 ```
 
@@ -57,7 +57,7 @@ flowchart LR
     Y --> X["bank<br>servicio externo"]
 
     ZB["zabbix-bridge"] -. "health, Redis, PostgreSQL,<br>nginx, faults" .-> W & S & C & K & Y & X & R & P
-    ZB ==>|"red ZABBIX_NETWORK, zabbix-web:8080<br>template, hosts, dashboard, history.push"| Z["Zabbix 7.0+"]
+    ZB ==>|"ZABBIX_URL + ZABBIX_API_TOKEN<br>template, hosts, dashboard, history.push"| Z["Zabbix 7.0+"]
     S & C & K & Y & N ==>|"OTLP gRPC :4317<br>trazas, logs, métricas"| OC["otel-collector<br>(único punto de salida)"]
     W -->|"/otlp (RUM)"| OC
     OC ==>|"red ZABBIX_NETWORK<br>zabbix-proxy-apm:4317"| A["zabbix-proxy-apm<br>(stack Zabbix Demo)"]
@@ -125,7 +125,7 @@ Los triggers de trazas (latencia, tasa de errores, sin spans) los aporta el temp
 
 **Requisitos**: Zabbix **7.0 o superior** accesible por HTTPS desde el servidor de Dokploy (p. ej. el stack [Zabbix-Demo](https://github.com/SimonLexRS/Zabbix-Demo)) y, para APM, el proxy `zabbix-proxy-apm` registrado con APM habilitado (ver [sección 4](#4-destino-apm-opentelemetry--clickhouse)).
 
-1. **Credenciales de Zabbix**: un usuario con rol **Super admin** (necesita importar templates y crear hosts y dashboards). Con el stack Zabbix-Demo basta con `Admin` y su `ZBX_ADMIN_PASSWORD`: no hay que entrar a la UI. Alternativa: un token (*Users → API tokens*) en `ZABBIX_API_TOKEN`.
+1. **Token de API en ese Zabbix**: *Users → API tokens → Create API token* para un usuario con rol **Super admin** (necesita importar templates y crear hosts y dashboards). El token es de **un** Zabbix: junto con `ZABBIX_URL` dice explícitamente a cuál reporta la tienda.
 2. **Dokploy → Project → Create Service → Compose**:
    - *Provider*: **Git** (o GitHub) → repositorio `https://github.com/SimonLexRS/Zabbix-Demo-Fault-shop.git`, rama `main`.
    - *Compose Path*: `./docker-compose.yml`
@@ -133,17 +133,21 @@ Los triggers de trazas (latencia, tasa de errores, sin spans) los aporta el temp
 3. **Environment** (pestaña *Environment* del servicio). Mínimo:
 
    ```env
-   # Red del stack Zabbix (su ZBX_SHARED_NETWORK). Despliega antes el Zabbix: la red tiene que existir.
+   # A qué Zabbix reporta: su URL (pública, o http://zabbix-web:8080 si comparte la red) y un token de ESE Zabbix
+   ZABBIX_URL=https://zabbix.tu-dominio.com
+   ZABBIX_API_TOKEN=<token del paso 1>
+
+   # Clave del panel de fallas: sin ella se ven los interruptores pero no se pueden cambiar
+   CONTROL_TOKEN=<clave larga y aleatoria>
+
+   # Red del mismo stack Zabbix (su ZBX_SHARED_NETWORK): la telemetría va a zabbix-proxy-apm:4317 por ahí
    ZABBIX_NETWORK=zabbix-lab-prd-02
 
-   # Admin del stack Zabbix (su ZBX_ADMIN_PASSWORD)   # o ZABBIX_API_TOKEN=<token>
-   ZABBIX_PASSWORD='<ZBX_ADMIN_PASSWORD>'
-
-   # Business KPIs: el CLICKHOUSE_PASSWORD del stack Zabbix
+   # Business KPIs: el CLICKHOUSE_PASSWORD de ese stack Zabbix
    ZABBIX_CH_PASSWORD='<CLICKHOUSE_PASSWORD>'
    ```
 
-   Nada más: `otel-collector` y `zabbix-bridge` se unen a esa red y usan `zabbix-proxy-apm:4317` (APM) y `zabbix-web:8080` (API) por nombre, sin puertos del host ni URL pública. **El nombre de la red decide a qué Zabbix va todo**, así que varios proyectos con su propio Zabbix conviven en el mismo VPS sin coordinar puertos. Si el Zabbix no está desplegado, el deploy falla con `network … declared as external, but could not be found`.
+   Las cinco son obligatorias: si falta una, el deploy se detiene y la nombra. `otel-collector` es el único servicio de la tienda que envía telemetría fuera: se une a `ZABBIX_NETWORK` y reenvía todo a `zabbix-proxy-apm:4317`, sin puertos del host. Despliega antes el Zabbix: si la red no existe, el deploy falla con `network … declared as external, but could not be found`.
 
    El resto de variables tiene valores por defecto; la lista completa está en [`.env.example`](.env.example) y en la [sección 6](#6-variables-de-entorno).
 4. **Domains**: *Add Domain* → *Service Name* **`web`**, *Container Port* **`80`**, host p. ej. `shop.tu-dominio.com`, HTTPS con Let's Encrypt si quieres.
@@ -196,7 +200,7 @@ La tienda y su panel de fallas no tienen login propio. En Dokploy, *Security →
 git clone https://github.com/SimonLexRS/Zabbix-Demo-Fault-shop.git && cd Zabbix-Demo-Fault-shop
 # Con el stack Zabbix-Demo en el mismo Docker: ZABBIX_NETWORK = su ZBX_SHARED_NETWORK.
 # Sin Zabbix: docker network create zabbix-local y ZABBIX_NETWORK=zabbix-local (con ZABBIX_DRY_RUN=1).
-cp .env.example .env        # edita ZABBIX_NETWORK, ZABBIX_PASSWORD y ZABBIX_CH_PASSWORD
+cp .env.example .env        # edita ZABBIX_URL, ZABBIX_API_TOKEN, CONTROL_TOKEN, ZABBIX_NETWORK y ZABBIX_CH_PASSWORD
 docker compose -f docker-compose.yml -f compose.local.yaml up -d --build
 docker compose logs -f zabbix-bridge
 ```
@@ -233,7 +237,7 @@ zabbix-bridge ──────────────────────
 | Servicios de la tienda en esa red | solo `otel-collector` y `zabbix-bridge` |
 | Servicios → collector | `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317` (gRPC, por defecto) |
 | Collector → Zabbix APM | `APM_GRPC_ENDPOINT=http://zabbix-proxy-apm:4317` (por defecto) |
-| Bridge → API de Zabbix | `ZABBIX_URL=http://zabbix-web:8080` (por defecto) |
+| Bridge → API de Zabbix | `ZABBIX_URL` + `ZABBIX_API_TOKEN` (obligatorias; `http://zabbix-web:8080` si comparte la red) |
 
 **¿Por qué solo dos servicios en la red?** La red es de todo el stack Zabbix: si otra app conectara también su `shop` o su `postgres`, los nombres se mezclarían. Con un único punto de salida, los nombres de la tienda siguen siendo privados y varias apps pueden compartir el mismo Zabbix.
 
@@ -273,7 +277,7 @@ Debe listar `catalog`, `checkout`, `notifier`, `payment`, `shop` (y `shop-web` t
 
 ## 5. Romper algo: el panel de fallas
 
-Abre `/faults.html` y enciende una falla. Actúa en segundos, sobre los clientes simulados y sobre lo que hagas tú. **Volver todo a la normalidad** apaga todo. Cada switch activo abre el problema *Fault inyectado: …* (Info) en el host `Fault Shop`, así que en Zabbix siempre ves la **causa** junto a los **síntomas**.
+Abre `/faults.html` y enciende una falla. La primera vez pide la **clave de administrador** (`CONTROL_TOKEN`) y la guarda en ese navegador (*Olvidar clave* la borra); sin ella se ven los interruptores pero no se pueden cambiar. Actúa en segundos, sobre los clientes simulados y sobre lo que hagas tú. **Volver todo a la normalidad** apaga todo. Cada switch activo abre el problema *Fault inyectado: …* (Info) en el host `Fault Shop`, así que en Zabbix siempre ves la **causa** junto a los **síntomas**.
 
 | Interruptor | Qué hace | En Zabbix (host `Fault Shop`) | En APM (host `apm-fault-shop`) |
 |---|---|---|---|
@@ -308,9 +312,9 @@ Abre `/faults.html` y enciende una falla. Actúa en segundos, sobre los clientes
 | Variable | Por defecto | Uso |
 |---|---|---|
 | `ZABBIX_NETWORK` | — (obligatoria) | Red Docker del stack Zabbix (`ZBX_SHARED_NETWORK`); en ella están `zabbix-web` y `zabbix-proxy-apm` |
-| `ZABBIX_URL` | `http://zabbix-web:8080` | URL del frontend de Zabbix (se le añade `/api_jsonrpc.php`). Vacía = sin integración |
-| `ZABBIX_API_TOKEN` | — | Token de API de un Super admin |
-| `ZABBIX_USER` / `ZABBIX_PASSWORD` | `Admin` / — | En lugar del token: usuario Super admin (`user.login`; vuelve a entrar si la sesión expira) |
+| `ZABBIX_URL` | — (obligatoria) | URL del frontend del Zabbix al que reporta (se le añade `/api_jsonrpc.php`) |
+| `ZABBIX_API_TOKEN` | — (obligatoria) | Token de API de un Super admin de ese Zabbix |
+| `CONTROL_TOKEN` | — (obligatoria) | Clave del panel de fallas: `PUT`/`DELETE /api/faults` exigen la cabecera `x-control-token` |
 | `ZABBIX_HOST` | `Fault Shop` | Host de la tienda (y prefijo del nombre del dashboard) |
 | `ZABBIX_HOST_GROUP` | `Fault Shop` | Grupo de hosts |
 | `ZABBIX_SEND_INTERVAL` | `10` | Segundos entre envíos |

@@ -2,7 +2,8 @@
 # host, triggers and dashboard created through the API) and traced with OpenTelemetry to Zabbix APM (ClickHouse).
 #
 #   Dokploy: Compose service from this repository, variables of .env.example in "Environment", domain -> web:80.
-#            Deploy the Zabbix stack first: ZABBIX_NETWORK is its ZBX_SHARED_NETWORK.
+#            Deploy the Zabbix stack first. Required: ZABBIX_URL + ZABBIX_API_TOKEN (which Zabbix), CONTROL_TOKEN
+#            (key of the fault panel), ZABBIX_NETWORK (its ZBX_SHARED_NETWORK, for the telemetry), ZABBIX_CH_PASSWORD.
 #   Docker:  cp .env.example .env && docker compose -f docker-compose.yml -f compose.local.yaml up -d --build
 #
 # Browser -> web (nginx) -> shop -> catalog -> PostgreSQL
@@ -65,6 +66,8 @@ services:
       OTEL_SERVICE_NAME: shop
       # The panel reads its switches every few seconds and zabbix-bridge probes /health: not part of the store.
       OTEL_PYTHON_FLASK_EXCLUDED_URLS: faults,health
+      # Administrator key of the fault panel: changing a switch needs the header x-control-token.
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?set CONTROL_TOKEN (administrator key of the fault panel)}
       OTEL_RESOURCE_ATTRIBUTES: service.namespace=${OTEL_SERVICE_NAMESPACE:-fault-shop},service.version=1.0.0,deployment.environment.name=${DEPLOY_ENV:-demo}
     volumes: [faults:/faults]
     depends_on: [redis, catalog, checkout]
@@ -156,8 +159,8 @@ services:
     volumes: [faults:/faults:ro]
     depends_on: [web]
 
-  # Zabbix integration: imports the template, creates host group, host, APM host and dashboard through the API (on the
-  # Zabbix network, zabbix-web:8080), then sends the measurements every ZABBIX_SEND_INTERVAL seconds.
+  # Zabbix integration: imports the template, creates host group, host, APM host and dashboard through the API of
+  # ZABBIX_URL with ZABBIX_API_TOKEN, then sends the measurements every ZABBIX_SEND_INTERVAL seconds.
   zabbix-bridge:
     <<: *service
     build: *pybuild
@@ -165,12 +168,10 @@ services:
     expose: ["8000"]
     networks: [default, zabbix]
     environment:
-      # zabbix-web of the Zabbix stack, reached through the Zabbix network (no public URL, no TLS).
-      ZABBIX_URL: ${ZABBIX_URL:-http://zabbix-web:8080}
-      ZABBIX_API_TOKEN: ${ZABBIX_API_TOKEN:-}
-      # Super admin user (Zabbix-Demo stack: Admin / its ZBX_ADMIN_PASSWORD), or the token above.
-      ZABBIX_USER: ${ZABBIX_USER:-Admin}
-      ZABBIX_PASSWORD: ${ZABBIX_PASSWORD:-}
+      # Which Zabbix: its frontend URL (public, or http://zabbix-web:8080 on the Zabbix network) and an API token of a
+      # Super admin user of THAT Zabbix (Users -> API tokens).
+      ZABBIX_URL: ${ZABBIX_URL:?set ZABBIX_URL (frontend URL of the Zabbix this shop reports to)}
+      ZABBIX_API_TOKEN: ${ZABBIX_API_TOKEN:?set ZABBIX_API_TOKEN (API token of a Super admin of that Zabbix)}
       ZABBIX_HOST: ${ZABBIX_HOST:-Fault Shop}
       ZABBIX_HOST_GROUP: ${ZABBIX_HOST_GROUP:-Fault Shop}
       ZABBIX_SEND_INTERVAL: ${ZABBIX_SEND_INTERVAL:-10}

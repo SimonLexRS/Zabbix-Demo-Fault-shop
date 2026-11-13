@@ -15,13 +15,26 @@
 	<div class="bar">
 		<strong class="state" id="state"></strong>
 		<button type="button" id="reset" data-t="reset"></button>
+		<button type="button" id="logout" class="plain" data-t="logout" hidden></button>
 	</div>
 	<div id="faults" class="faults"></div>
 	<h2 data-t="more"></h2>
 	<p class="muted" data-t="moreText"></p>
 </main>
+<dialog id="auth" class="auth">
+	<form method="dialog" id="authForm">
+		<strong data-t="authTitle"></strong>
+		<p class="muted" data-t="authText"></p>
+		<input id="authInput" type="password" autocomplete="current-password" required>
+		<p id="authError" class="auth-error"></p>
+		<div class="bar">
+			<button type="button" class="plain" id="authCancel" data-t="cancel"></button>
+			<button type="submit" value="ok" data-t="enter"></button>
+		</div>
+	</form>
+</dialog>
 <script type="module">
-	import { api, notice } from './shop.js';
+	import { api, notice, controlKey, setControlKey, onControlKeyNeeded } from './shop.js';
 
 	const es = navigator.language.startsWith('es');
 	const text = es ? {
@@ -31,7 +44,11 @@
 		normal: 'Todo normal', active: (count) => count === 1 ? '1 fallo activo' : count + ' fallos activos',
 		more: 'Fallos que no son un interruptor',
 		moreText: 'Caída real de un servicio (conexión rechazada) y despliegue de una versión defectuosa: se hacen con docker compose; están en el README de este ejemplo.',
-		off: 'No', on: 'Sí', see: 'En Zabbix: '
+		off: 'No', on: 'Sí', see: 'En Zabbix: ',
+		authTitle: 'Clave de administrador',
+		authText: 'Para cambiar los fallos ingresa la clave (CONTROL_TOKEN). Se guarda solo en este navegador.',
+		authWrong: 'Clave incorrecta, intenta de nuevo.', cancel: 'Cancelar', enter: 'Entrar',
+		logout: 'Olvidar clave'
 	} : {
 		title: 'Fault panel',
 		intro: 'Each switch breaks one part of the store until you turn it off. It acts within seconds, on the simulated customers and on what you do in the store yourself.',
@@ -39,7 +56,11 @@
 		normal: 'Everything normal', active: (count) => count === 1 ? '1 fault active' : count + ' faults active',
 		more: 'Faults that are not a switch',
 		moreText: 'A service really going down (connection refused) and the release of a defective version: both are done with docker compose; see the README of this example.',
-		off: 'Off', on: 'On', see: 'In Zabbix: '
+		off: 'Off', on: 'On', see: 'In Zabbix: ',
+		authTitle: 'Administrator key',
+		authText: 'Enter the key (CONTROL_TOKEN) to change faults. It is kept only in this browser.',
+		authWrong: 'Wrong key, try again.', cancel: 'Cancel', enter: 'Enter',
+		logout: 'Forget key'
 	};
 
 	const ms = (value) => value >= 1000 ? value / 1000 + ' s' : value + ' ms';
@@ -84,6 +105,29 @@
 	];
 
 	document.querySelectorAll('[data-t]').forEach((element) => element.textContent = text[element.dataset.t]);
+
+	// Administrator key (CONTROL_TOKEN): asked in this dialog when a change gets HTTP 401.
+	const dialog = document.getElementById('auth');
+	const input = document.getElementById('authInput');
+	const logout = document.getElementById('logout');
+	const showLogout = () => logout.hidden = !controlKey();
+
+	onControlKeyNeeded((wrong) => new Promise((resolve) => {
+		document.getElementById('authError').textContent = wrong ? text.authWrong : '';
+		input.value = '';
+		dialog.returnValue = '';
+		dialog.onclose = () => {
+			const key = dialog.returnValue === 'ok' ? input.value.trim() : '';
+			resolve(key || null);
+			setTimeout(showLogout);
+		};
+		dialog.showModal();
+		input.focus();
+	}));
+	document.getElementById('authForm').addEventListener('submit', () => dialog.returnValue = 'ok');
+	document.getElementById('authCancel').addEventListener('click', () => dialog.close(''));
+	logout.addEventListener('click', () => { setControlKey(''); showLogout(); });
+	showLogout();
 
 	const panel = document.getElementById('faults');
 	let values = {};
@@ -146,7 +190,14 @@
 	}
 
 	document.getElementById('reset').addEventListener('click', async () => {
-		values = await api('/faults', { method: 'DELETE' });
+		try {
+			values = await api('/faults', { method: 'DELETE' });
+			notice('');
+		}
+		catch (error) {
+			notice(error.message, 'error');
+		}
+
 		draw();
 	});
 

@@ -53,3 +53,11 @@ td.number, th.number { text-align: right; font-variant-numeric: tabular-nums; }
 .bar .state { margin-right: auto; }
 
 @media (max-width: 600px) { .fault { grid-template-columns: 1fr; } .fault .control { justify-content: flex-start; } }
+
+/* Administrator key dialog of the fault panel */
+.auth { border: 1px solid var(--line); border-radius: 6px; padding: 20px; max-width: min(420px, calc(100vw - 32px)); background: var(--paper); color: var(--ink); }
+.auth::backdrop { background: rgb(0 0 0 / .4); }
+.auth input { width: 100%; box-sizing: border-box; font: inherit; padding: 7px 10px; margin: 6px 0; border: 1px solid var(--line); border-radius: 4px; }
+.auth .bar { justify-content: flex-end; margin: 12px 0 0; }
+.auth-error { color: var(--accent); min-height: 1.2em; margin: 4px 0 0; }
+[hidden] { display: none !important; }

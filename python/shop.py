@@ -1,6 +1,8 @@
 """shop: the API behind the store pages. Cart in Redis; products and orders are other services."""
+import hmac
 import json
 import logging
+import os
 import uuid
 
 import redis
@@ -128,13 +130,34 @@ def checkout(cart_id: str):
 	return forward(response)
 
 
+# Administrator key of the fault panel: changing a switch needs the header x-control-token = CONTROL_TOKEN.
+# Reading them stays open (the store and the bridge read them).
+CONTROL_TOKEN = os.environ['CONTROL_TOKEN']
+
+
+def authorized() -> bool:
+	return hmac.compare_digest(request.headers.get('x-control-token', '').encode(), CONTROL_TOKEN.encode())
+
+
+def unauthorized():
+	return jsonify(error='administrator key required (x-control-token)'), 401
+
+
 @app.get('/faults')
 def faults_get():
 	return jsonify(faults.get())
 
 
+@app.get('/faults/auth')
+def faults_auth():
+	return ('', 204) if authorized() else unauthorized()
+
+
 @app.put('/faults')
 def faults_put():
+	if not authorized():
+		return unauthorized()
+
 	values = faults.save(request.get_json(force=True))
 	log.warning('Fault switches changed: %s', json.dumps(values))
 
@@ -143,6 +166,9 @@ def faults_put():
 
 @app.delete('/faults')
 def faults_reset():
+	if not authorized():
+		return unauthorized()
+
 	log.warning('Fault switches reset')
 
 	return jsonify(faults.reset())

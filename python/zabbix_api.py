@@ -1,4 +1,4 @@
-"""Zabbix API (JSON-RPC, API token or user/password) and Zabbix sender protocol: what zabbix_bridge.py needs to provision Zabbix and
+"""Zabbix API (JSON-RPC, API token) and Zabbix sender protocol: what zabbix_bridge.py needs to provision Zabbix and
 send it values. Idempotent: safe to run on every start.
 """
 import json
@@ -25,44 +25,20 @@ class ZabbixError(Exception):
 
 
 class Api:
-	"""JSON-RPC client. Authenticates with an API token, or with user/password (user.login; logs in again once if
-	the session expires)."""
+	"""JSON-RPC client authenticated with an API token (Authorization: Bearer)."""
 
-	def __init__(self, url: str, token: str = '', verify_tls: bool = True, timeout: int = 20, user: str = '',
-			password: str = ''):
+	def __init__(self, url: str, token: str, verify_tls: bool = True, timeout: int = 20):
 		base = url.rstrip('/')
 		self.url = base if base.endswith('api_jsonrpc.php') else base + '/api_jsonrpc.php'
 		self.token = token
-		self.user = user
-		self.password = password
-		self.session = ''
 		self.verify = verify_tls
 		self.timeout = timeout
 		self.http = requests.Session()
 
-	def _login(self) -> str:
-		self.session = self._request('user.login', {'username': self.user, 'password': self.password}, '')
-		return self.session
-
-	def _bearer(self) -> str:
-		if self.token:
-			return self.token
-		return self.session or self._login()
-
 	def __call__(self, method: str, params=None, auth: bool = True):
-		if not auth:
-			return self._request(method, params, '')
-		try:
-			return self._request(method, params, self._bearer())
-		except ZabbixError as error:
-			if self.token or not any(text in str(error) for text in ('Not authorized', 'Session terminated')):
-				raise
-			return self._request(method, params, self._login())
-
-	def _request(self, method: str, params, bearer: str):
 		headers = {'Content-Type': 'application/json-rpc'}
-		if bearer:
-			headers['Authorization'] = f'Bearer {bearer}'
+		if auth:
+			headers['Authorization'] = f'Bearer {self.token}'
 
 		response = self.http.post(self.url, headers=headers, verify=self.verify, timeout=self.timeout,
 			data=json.dumps({'jsonrpc': '2.0', 'method': method, 'params': params if params is not None else {}, 'id': 1}))
