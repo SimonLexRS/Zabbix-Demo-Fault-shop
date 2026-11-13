@@ -2,28 +2,27 @@
 # host, triggers and dashboard created through the API) and traced with OpenTelemetry to Zabbix APM (ClickHouse).
 #
 #   Dokploy: Compose service from this repository, variables of .env.example in "Environment", domain -> web:80.
+#            Deploy the Zabbix stack first: ZABBIX_NETWORK is its ZBX_SHARED_NETWORK.
 #   Docker:  cp .env.example .env && docker compose -f docker-compose.yml -f compose.local.yaml up -d --build
 #
 # Browser -> web (nginx) -> shop -> catalog -> PostgreSQL
 #                                -> checkout -> catalog, payment -> bank (not instrumented), PostgreSQL
 #                                            -> Redis queue "orders" -> notifier
-# zabbix-bridge -> health of every service, Redis, PostgreSQL, nginx, fault switches -> Zabbix API (history.push)
-# Every instrumented service -> OTLP -> ${OTEL_EXPORTER_OTLP_ENDPOINT} (Zabbix APM proxy or OTel Collector -> ClickHouse)
+# zabbix-bridge -> health of every service, Redis, PostgreSQL, nginx, fault switches -> zabbix-web:8080 (history.push)
+# Every instrumented service -> OTLP -> otel-collector -> zabbix-proxy-apm:4317 (Zabbix APM -> ClickHouse)
+# Only otel-collector and zabbix-bridge join the Zabbix network (ZABBIX_NETWORK): the other names (shop, postgres...)
+# stay private, so several apps can share one Zabbix without name clashes.
 
 x-service: &service
-  extra_hosts:
-    - host.docker.internal:host-gateway
   restart: unless-stopped
   logging:
     options:
       max-size: 10m
       max-file: "3"
 
-# Destination of the telemetry: set it in Dokploy (Environment) or in .env. See README "Destino APM".
-# Default: the zabbix-proxy-apm of the Zabbix Demo stack (OTLP gRPC) published on port 4317 of this same host.
-# Several Zabbix stacks on the VPS: each uses its own OTLP_PORT, so set the port of the one this shop reports to.
+# Telemetry of the services: to the internal otel-collector, which relays it to Zabbix APM. See README "Destino APM".
 x-otel: &otel
-  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4317}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
   OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-grpc}
   OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
   OTEL_TRACES_EXPORTER: ${OTEL_TRACES_EXPORTER:-otlp}
@@ -157,18 +156,20 @@ services:
     volumes: [faults:/faults:ro]
     depends_on: [web]
 
-  # Zabbix integration: imports the template, creates host group, host, APM host and dashboard with the API token,
-  # then sends the measurements every ZABBIX_SEND_INTERVAL seconds. Without ZABBIX_URL it only serves /api/metrics.
+  # Zabbix integration: imports the template, creates host group, host, APM host and dashboard through the API (on the
+  # Zabbix network, zabbix-web:8080), then sends the measurements every ZABBIX_SEND_INTERVAL seconds.
   zabbix-bridge:
     <<: *service
     build: *pybuild
     command: python zabbix_bridge.py
     expose: ["8000"]
+    networks: [default, zabbix]
     environment:
-      ZABBIX_URL: ${ZABBIX_URL:-}
+      # zabbix-web of the Zabbix stack, reached through the Zabbix network (no public URL, no TLS).
+      ZABBIX_URL: ${ZABBIX_URL:-http://zabbix-web:8080}
       ZABBIX_API_TOKEN: ${ZABBIX_API_TOKEN:-}
-      # Instead of the token: a Super admin user (Zabbix-Demo stack: Admin / its ZBX_ADMIN_PASSWORD).
-      ZABBIX_USER: ${ZABBIX_USER:-}
+      # Super admin user (Zabbix-Demo stack: Admin / its ZBX_ADMIN_PASSWORD), or the token above.
+      ZABBIX_USER: ${ZABBIX_USER:-Admin}
       ZABBIX_PASSWORD: ${ZABBIX_PASSWORD:-}
       ZABBIX_HOST: ${ZABBIX_HOST:-Fault Shop}
       ZABBIX_HOST_GROUP: ${ZABBIX_HOST_GROUP:-Fault Shop}
@@ -207,16 +208,18 @@ services:
       interval: 15s
       retries: 5
 
-  # OTLP/HTTP -> OTLP/gRPC relay for the browser telemetry only (the Zabbix APM proxy accepts gRPC only).
+  # Single exit of the telemetry: OTLP gRPC (services) and OTLP/HTTP (browser, through nginx) -> gRPC to the
+  # zabbix-proxy-apm of the Zabbix stack, on the Zabbix network (the proxy accepts gRPC only).
   otel-collector:
     <<: *service
     build:
       context: .
       dockerfile: otel/Dockerfile
     command: [--config=/etc/otelcol/collector.yaml]
-    expose: ["4318"]
+    expose: ["4317", "4318"]
+    networks: [default, zabbix]
     environment:
-      APM_GRPC_ENDPOINT: ${APM_GRPC_ENDPOINT:-${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4317}}
+      APM_GRPC_ENDPOINT: ${APM_GRPC_ENDPOINT:-http://zabbix-proxy-apm:4317}
       APM_TLS_INSECURE: ${APM_TLS_INSECURE:-true}
 
   # Reachable only from this compose network; the password protects nothing and is not a secret.
@@ -243,6 +246,12 @@ services:
       test: [CMD, redis-cli, ping]
       interval: 10s
       retries: 5
+
+# Network created by the Zabbix stack (its ZBX_SHARED_NETWORK): zabbix-web:8080 and zabbix-proxy-apm:4317 live there.
+networks:
+  zabbix:
+    external: true
+    name: ${ZABBIX_NETWORK:?set ZABBIX_NETWORK to the ZBX_SHARED_NETWORK of the Zabbix stack (deploy it first)}
 
 volumes:
   faults:

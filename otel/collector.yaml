@@ -1,9 +1,11 @@
-# Browser telemetry (RUM) of the store: the page sends OTLP/HTTP to /otlp, nginx forwards it here, and this Collector
-# forwards it over gRPC to the APM receiver (Zabbix 8.0 proxy with APM collector, which only accepts gRPC on 4317).
-# The backend services do not use it: they send straight to OTEL_EXPORTER_OTLP_ENDPOINT.
+# The only exit of the store's telemetry: the backend services send OTLP gRPC here (:4317), the browser (RUM) sends
+# OTLP/HTTP to /otlp and nginx forwards it here (:4318). This Collector, the only store service on the Zabbix network,
+# relays everything over gRPC to APM_GRPC_ENDPOINT (zabbix-proxy-apm:4317, the Zabbix 8.0 proxy, gRPC only).
 receivers:
   otlp:
     protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
 
@@ -26,6 +28,10 @@ service:
       processors: [batch]
       exporters: [otlp]
     logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp]
+    metrics:
       receivers: [otlp]
       processors: [batch]
       exporters: [otlp]

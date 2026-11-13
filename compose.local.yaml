@@ -1,5 +1,6 @@
 # Plain Docker (without Dokploy): publishes the store on the host.
 #   docker compose -f docker-compose.yml -f compose.local.yaml up -d --build
+# Needs the Zabbix network (ZABBIX_NETWORK): the ZBX_SHARED_NETWORK of a local Zabbix-Demo, or "docker network create".
 # Optional: the zabbix-bridge on BRIDGE_PORT, for the HTTP agent template ("Fault Shop by HTTP").
 services:
   web:
