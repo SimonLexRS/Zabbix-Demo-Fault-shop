@@ -6,7 +6,7 @@ import uuid
 import redis
 import requests
 from flask import Flask, jsonify, request
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 
 import faults
 
@@ -20,6 +20,15 @@ log = logging.getLogger('shop')
 logging.getLogger().setLevel(logging.INFO)
 store = redis.Redis(host='redis', decode_responses=True)
 http = requests.Session()
+
+# Business KPIs (APM -> Business KPIs and the template "APM business metrics by ClickHouse HTTP").
+meter = metrics.get_meter('shop')
+cart_additions = meter.create_counter('shop.cart.additions', unit='{item}', description='Products added to carts')
+
+
+def channel() -> str:
+	"""Who buys: the simulated customers of loadgen (python-requests) or a person in a browser."""
+	return 'simulado' if request.headers.get('User-Agent', '').startswith('python-requests') else 'web'
 
 
 def forward(response: requests.Response):
@@ -77,7 +86,9 @@ def cart_add(cart_id: str):
 	product_id = int(body['product_id'])
 	trace.get_current_span().set_attribute('app.product.id', product_id)
 
-	store.hincrby(f'cart:{cart_id}', product_id, int(body.get('quantity', 1)))
+	quantity = int(body.get('quantity', 1))
+	store.hincrby(f'cart:{cart_id}', product_id, quantity)
+	cart_additions.add(quantity, {'shop.channel': channel()})
 	store.expire(f'cart:{cart_id}', 3600)
 
 	return jsonify(items=cart_of(cart_id))
@@ -105,7 +116,8 @@ def checkout(cart_id: str):
 	response = http.post(f'{CHECKOUT}/orders', timeout=20, json={
 		'items': [{'id': product_id, 'quantity': quantity} for product_id, quantity in items.items()],
 		'email': body.get('email') or f'guest-{uuid.uuid4().hex[:6]}@example.com',
-		'card': card
+		'card': card,
+		'channel': channel()
 	})
 
 	if response.ok:

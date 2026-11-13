@@ -26,7 +26,9 @@ x-otel: &otel
   OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-grpc}
   OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
   OTEL_TRACES_EXPORTER: ${OTEL_TRACES_EXPORTER:-otlp}
-  OTEL_METRICS_EXPORTER: ${OTEL_METRICS_EXPORTER:-none}
+  # Metrics on for the Business KPIs (shop.orders, shop.revenue...); runtime/HTTP metrics are filtered by the template.
+  OTEL_METRICS_EXPORTER: ${OTEL_METRICS_EXPORTER:-otlp}
+  OTEL_METRIC_EXPORT_INTERVAL: ${OTEL_METRIC_EXPORT_INTERVAL:-60000}
   OTEL_LOGS_EXPORTER: ${OTEL_LOGS_EXPORTER:-otlp}
   OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED: "true"
   OTEL_NODE_ENABLED_INSTRUMENTATIONS: http,express,pg,undici
@@ -177,6 +179,15 @@ services:
       ZABBIX_APM_TEMPLATE: ${ZABBIX_APM_TEMPLATE:-Generic OpenTelemetry by OTLP,OpenTelemetry application by OTLP}
       ZABBIX_APM_HOST_NAME: ${ZABBIX_APM_HOST_NAME:-apm-fault-shop}
       ZABBIX_DRY_RUN: ${ZABBIX_DRY_RUN:-0}
+      # Business KPIs (APM-Dashboard module): template "APM business metrics by ClickHouse HTTP" on the APM host.
+      # ClickHouse as seen from the Zabbix server (Zabbix Demo stack: http://clickhouse:8123/, its CLICKHOUSE_USER/PASSWORD).
+      ZABBIX_KPI_ENABLED: ${ZABBIX_KPI_ENABLED:-1}
+      ZABBIX_KPI_TIMEZONE: ${ZABBIX_KPI_TIMEZONE:-UTC}
+      ZABBIX_KPI_METRIC_MATCHES: ${ZABBIX_KPI_METRIC_MATCHES:-^shop\.}
+      ZABBIX_CH_URL: ${ZABBIX_CH_URL:-http://clickhouse:8123/}
+      ZABBIX_CH_DB: ${ZABBIX_CH_DB:-zabbix}
+      ZABBIX_CH_USER: ${ZABBIX_CH_USER:-zabbix}
+      ZABBIX_CH_PASSWORD: ${ZABBIX_CH_PASSWORD:-}
       OTEL_SERVICE_NAMESPACE: ${OTEL_SERVICE_NAMESPACE:-fault-shop}
       FAULTS_FILE: /faults/faults.json
       DATABASE_URL: postgresql://shop:shop@postgres/shop

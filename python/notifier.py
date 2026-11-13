@@ -4,7 +4,7 @@ import logging
 import time
 
 import redis
-from opentelemetry import propagate, trace
+from opentelemetry import metrics, propagate, trace
 from opentelemetry.trace import SpanKind
 
 import faults
@@ -14,6 +14,7 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger().setLevel(logging.INFO)
 tracer = trace.get_tracer('notifier')
 queue = redis.Redis(host='redis')
+emails = metrics.get_meter('notifier').create_counter('shop.emails', unit='{email}', description='Order e-mails')
 
 
 def process(message: dict) -> None:
@@ -49,5 +50,7 @@ while True:
 
 	try:
 		process(order)
+		emails.add(1, {'email.result': 'sent'})
 	except Exception as error:
+		emails.add(1, {'email.result': 'failed'})
 		log.error('E-mail of order %s not sent: %s', order['order_id'], error)

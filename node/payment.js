@@ -2,7 +2,7 @@
 'use strict';
 
 const express = require('express');
-const { trace, SpanStatusCode } = require('@opentelemetry/api');
+const { metrics, trace, SpanStatusCode } = require('@opentelemetry/api');
 const faults = require('./faults');
 
 const BANK = 'http://bank:8000/authorize';
@@ -23,6 +23,10 @@ class BankError extends Error {
 	}
 }
 
+// Business KPI: charges by card and result (APM -> Business KPIs).
+const payments = metrics.getMeter('payment').createCounter('shop.payments', { unit: '{payment}', description: 'Card charges' });
+const RESULTS = { CardDeclinedError: 'declined', BankTimeoutError: 'bank_timeout', BankUnreachableError: 'bank_unreachable' };
+
 const app = express();
 
 app.use(express.json());
@@ -32,12 +36,23 @@ app.use(faults.down('payment'));
 app.get('/health', (req, res) => res.json({ ok: true, service: 'payment' }));
 
 app.post('/charge', async (req, res) => {
-	const card = String(req.body.card || '');
+	const cardType = CARDS[String(req.body.card || '')[0]] || 'unknown';
 
-	trace.getActiveSpan()?.setAttributes({
-		'app.payment.amount': Number(req.body.amount), 'app.payment.card_type': CARDS[card[0]] || 'unknown'
-	});
+	trace.getActiveSpan()?.setAttributes({ 'app.payment.amount': Number(req.body.amount), 'app.payment.card_type': cardType });
 
+	try {
+		await charge(req.body.amount);
+		payments.add(1, { 'payment.card_type': cardType, 'payment.result': 'approved' });
+	}
+	catch (error) {
+		payments.add(1, { 'payment.card_type': cardType, 'payment.result': RESULTS[error.name] || 'error' });
+		throw error;
+	}
+
+	res.json({ charged: req.body.amount });
+});
+
+async function charge(amount) {
 	if (Math.random() * 100 < faults.get().payment_fail_pct) {
 		throw new CardDeclinedError('Card declined by the issuer (fault panel)');
 	}
@@ -45,7 +60,7 @@ app.post('/charge', async (req, res) => {
 	const response = await fetch(BANK, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ amount: req.body.amount }),
+		body: JSON.stringify({ amount }),
 		signal: AbortSignal.timeout(BANK_TIMEOUT_MS)
 	}).catch((error) => {
 		// fetch reports both as a DOMException or a bare TypeError: name what happened.
@@ -57,9 +72,7 @@ app.post('/charge', async (req, res) => {
 	if (!response.ok) {
 		throw new Error(`The bank answered HTTP ${response.status}`);
 	}
-
-	res.json({ charged: req.body.amount });
-});
+}
 
 app.use(faults.failed(trace, SpanStatusCode));
 app.listen(8000, () => console.log('payment listening on 8000'));

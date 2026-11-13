@@ -1,3 +1,37 @@
+### Business KPIs
+
+Además de trazas y logs, los servicios envían **métricas de negocio** con la API de métricas de OpenTelemetry (mismo exportador y mismo `service.namespace`). Las muestra la pestaña **APM → Overview → fault-shop → Business KPIs** del [módulo APM-Dashboard](https://github.com/SimonLexRS/zabbix-apm-dashboard) y el bridge enlaza al host `apm-fault-shop` el template **APM business metrics by ClickHouse HTTP** ([`zabbix/apm_business_metrics_clickhouse_http.json`](zabbix/apm_business_metrics_clickhouse_http.json)), que las convierte en ítems de Zabbix (por minuto, por hora, hoy, ayer, última hora/24 h, participación y ranking por atributo).
+
+| Métrica | Tipo | Servicio | Atributos (desglose) |
+|---|---|---|---|
+| `shop.orders` | counter | checkout | `shop.channel` (`web`/`simulado`), `payment.card_type` |
+| `shop.revenue` (USD) | counter | checkout | `shop.channel`, `payment.card_type` |
+| `shop.order.amount` (USD) | histogram | checkout | `shop.channel`, `payment.card_type` |
+| `shop.items.sold` | counter | checkout | `shop.category` (Desk, Audio, Video, Network, Storage, Offers) |
+| `shop.orders.failed` | counter | checkout | `shop.failure` (`payment_declined`, `bank_timeout`, `bank_unreachable`, `out_of_stock`, `service_down`, `release_defect`, `service_error`), `shop.channel`, `payment.card_type` |
+| `shop.payments` | counter | payment | `payment.card_type`, `payment.result` (`approved`, `declined`, `bank_timeout`, `bank_unreachable`) |
+| `shop.cart.additions` | counter | shop | `shop.channel` |
+| `shop.emails` | counter | notifier | `email.result` (`sent`/`failed`) |
+
+Cada falla del panel se ve en el negocio: *Pagos fallidos 50 %* sube `shop.orders.failed{shop.failure=payment_declined}` y `shop.payments{payment.result=declined}` y baja `shop.revenue`; *Sin stock* deja `shop.orders` en 0 con `out_of_stock`; *E-mails fallan* sube `shop.emails{email.result=failed}`; la release `1.1.0` produce `release_defect`.
+
+**Configuración** (variables del servicio, ver [sección 6](#6-variables-de-entorno)): el template consulta ClickHouse **desde el Zabbix server**, así que la URL es la que ve el server. Con el stack Zabbix Demo:
+
+```env
+ZABBIX_CH_URL=http://clickhouse:8123/
+ZABBIX_CH_USER=<CLICKHOUSE_USER del stack Zabbix Demo>
+ZABBIX_CH_PASSWORD=<CLICKHOUSE_PASSWORD del stack Zabbix Demo>   # se guarda como macro secreta
+ZABBIX_KPI_TIMEZONE=America/La_Paz                               # zona horaria de "hoy"/"ayer"
+```
+
+**Dashboard de KPIs** (comparación por canal, tarjeta, categoría y motivo de falla), 2–3 minutos después del primer deploy, con el script del módulo:
+
+```sh
+git clone https://github.com/SimonLexRS/zabbix-apm-dashboard.git && cd zabbix-apm-dashboard
+export ZABBIX_URL=https://<tu-zabbix> ZABBIX_API_TOKEN=<token>
+python3 scripts/zabbix-apm-app.py kpi-dashboard fault-shop      # crea/actualiza "KPIs fault-shop"
+```
+
 # Fault Shop · Zabbix + APM (OpenTelemetry → ClickHouse)
 
 [English](README.en.md)
@@ -36,6 +70,7 @@ flowchart LR
 2. [Despliegue en Dokploy](#2-despliegue-en-dokploy)
 3. [Despliegue con Docker](#3-despliegue-con-docker)
 4. [Destino APM (OpenTelemetry → ClickHouse)](#4-destino-apm-opentelemetry--clickhouse)
+   - [Business KPIs](#business-kpis)
 5. [Romper algo: el panel de fallas](#5-romper-algo-el-panel-de-fallas)
 6. [Variables de entorno](#6-variables-de-entorno)
 7. [Alternativa: Zabbix por HTTP agent (pull)](#7-alternativa-zabbix-por-http-agent-pull)
@@ -116,8 +151,37 @@ Los triggers de trazas (latencia, tasa de errores, sin spans) los aporta el temp
    - Zabbix → *Monitoring → Hosts* → `Fault Shop` con *Latest data*, y *Dashboards* → `Fault Shop · Estado y APM`.
    - Estado del bridge desde la terminal de Dokploy (contenedor `zabbix-bridge`): `wget -qO- localhost:8000/api/zabbix/status`.
 
-> [!WARNING]
-> El panel de fallas no tiene autenticación. Si publicas el dominio en Internet, protégelo con **Basic Auth** en Dokploy (*Advanced → Security*) o úsalo solo en una red de pruebas.
+### Proteger el dominio (Basic Auth reforzado)
+
+La tienda y su panel de fallas no tienen login propio. En Dokploy, *Security → Basic Auth* solo existe para *Applications* y *Forward Auth* (login de Dokploy) requiere licencia Enterprise, así que en un servicio **Compose** se usa un middleware de Traefik:
+
+1. Hash **bcrypt** de la contraseña (no MD5/SHA1): `htpasswd -nbB -C 12 admin '<contraseña larga y aleatoria>'`.
+2. Dokploy → *Settings → Traefik → Middlewares* (`middlewares.yml`), añade:
+
+   ```yaml
+   http:
+     middlewares:
+       faultshop-auth:
+         basicAuth:
+           realm: "Fault Shop"
+           removeHeader: true          # la cabecera Authorization no llega a la app
+           users:
+             - "admin:$2y$12$...hash..."
+       faultshop-headers:
+         headers:
+           stsSeconds: 31536000        # HSTS: solo HTTPS
+           stsIncludeSubdomains: true
+           contentTypeNosniff: true
+           frameDeny: true
+           referrerPolicy: "same-origin"
+       faultshop-ratelimit:
+         rateLimit:                    # frena intentos de fuerza bruta
+           average: 30
+           burst: 60
+   ```
+3. Servicio → *Domains* → editar el dominio de `web` → *Middlewares*: `faultshop-auth@file`, `faultshop-headers@file`, `faultshop-ratelimit@file` → *Deploy*.
+
+`loadgen` y `zabbix-bridge` siguen funcionando: van por la red interna (`http://web`), no por Traefik. La telemetría del navegador (`/otlp`) es del mismo origen y reutiliza las credenciales. Para cambiar la contraseña, genera otro hash y reemplaza la línea de `users`.
 
 **Release defectuosa**: pon `CHECKOUT_VERSION=1.1.0` en *Environment* y *Deploy*; vuelve a `1.0.0` para hacer rollback (ver [sección 5](#fallas-que-no-son-un-interruptor)).
 
@@ -186,7 +250,7 @@ Con un Collector propio que acepte HTTP puedes enviar RUM directo (`RUM_OTLP_HTT
 
 - Con TLS usa `https://...` (y `APM_TLS_INSECURE=false`); con autenticación, `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<token>`.
 - **`service.namespace`** (`OTEL_SERVICE_NAMESPACE`, por defecto `fault-shop`) es la "aplicación" en Zabbix APM; el bridge la pone en las macros de namespace del host APM.
-- Métricas OTel desactivadas por defecto (`OTEL_METRICS_EXPORTER=none`); pon `otlp` si quieres enviarlas (el proxy APM también guarda métricas).
+- Métricas OTel activadas por defecto (`OTEL_METRICS_EXPORTER=otlp`, cada 60 s): alimentan los [Business KPIs](#business-kpis). Las de runtime/HTTP también se envían, pero el template de KPIs las ignora.
 - Prueba rápida del receptor sin la tienda: `docker run --rm ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:latest traces --otlp-endpoint <ip-del-vps>:4317 --otlp-insecure --traces 5 --service smoke-api`.
 
 Comprobar que llegan trazas (en el servidor de ClickHouse):
@@ -250,6 +314,11 @@ Abre `/faults.html` y enciende una falla. Actúa en segundos, sobre los clientes
 | `ZABBIX_APM_TEMPLATE` | `Generic OpenTelemetry by OTLP,OpenTelemetry application by OTLP` | Templates OTLP candidatos (se usa el primero que exista) |
 | `ZABBIX_APM_HOST_NAME` | `apm-fault-shop` | Nombre del host APM |
 | `ZABBIX_DRY_RUN` | `0` | `1` = no envía nada, solo lo escribe en el log |
+| `ZABBIX_KPI_ENABLED` | `1` | Importar y enlazar el template de Business KPIs al host APM |
+| `ZABBIX_KPI_TIMEZONE` | `UTC` | `{$APM.KPI.TIMEZONE}`: zona horaria de "hoy" y "ayer" |
+| `ZABBIX_KPI_METRIC_MATCHES` | `^shop\.` | Métricas que se convierten en ítems |
+| `ZABBIX_CH_URL` / `ZABBIX_CH_DB` | `http://clickhouse:8123/` / `zabbix` | ClickHouse visto desde el Zabbix server |
+| `ZABBIX_CH_USER` / `ZABBIX_CH_PASSWORD` | `zabbix` / — | Credenciales de ClickHouse (la contraseña va como macro secreta) |
 
 **APM / OpenTelemetry** (todos los servicios instrumentados)
 
@@ -258,7 +327,8 @@ Abre `/faults.html` y enciende una falla. Actúa en segundos, sobre los clientes
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://host.docker.internal:4317` | Receptor OTLP: `zabbix-proxy-apm` publicado en el host (o `http://<ip-del-vps>:4317`) |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | `grpc` para `:4317`, `http/protobuf` para un Collector en `:4318` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | — | Cabeceras de autenticación |
-| `OTEL_TRACES_EXPORTER` / `OTEL_LOGS_EXPORTER` / `OTEL_METRICS_EXPORTER` | `otlp` / `otlp` / `none` | Señales enviadas |
+| `OTEL_TRACES_EXPORTER` / `OTEL_LOGS_EXPORTER` / `OTEL_METRICS_EXPORTER` | `otlp` / `otlp` / `otlp` | Señales enviadas (las métricas alimentan los Business KPIs) |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` | ms entre exportaciones de métricas |
 | `OTEL_SERVICE_NAMESPACE` | `fault-shop` | `service.namespace` (aplicación en APM) y `{$OTLP.NAMESPACE}` |
 | `DEPLOY_ENV` | `demo` | `deployment.environment.name` |
 | `RUM_OTLP_HTTP_ENDPOINT` | `http://otel-collector:4318` | Receptor OTLP/HTTP de los spans del navegador (el collector interno) |
@@ -293,6 +363,7 @@ Mismas claves, triggers y LLD que el modo push: un ítem HTTP agent `fshop.raw` 
 | `certificate verify failed` | Certificado autofirmado: `ZABBIX_TLS_INSECURE=1` |
 | Rechazos `Client IP is not in item's allowed hosts list` | Los ítems trapper solo aceptan valores de `{$TRAPPER.ALLOWED_HOSTS}` y con `history.push` se valida la IP del **frontend** de Zabbix. El template trae redes privadas por defecto; si tu frontend tiene IP pública, añádela en esa macro del host |
 | Envío con rechazos durante el primer minuto | Normal: los ítems por servicio aparecen cuando Zabbix procesa la LLD. El bridge reenvía la LLD y el dashboard se completa solo |
+| Ítems `KPI ...` sin datos o *apm.kpi.get* no soportado | `ZABBIX_CH_URL`/usuario/contraseña incorrectos, o ClickHouse no alcanzable desde el Zabbix **server**. Revisa el ítem `apm.kpi.get` del host `apm-fault-shop` |
 | Host APM omitido | Tu Zabbix no tiene ninguno de los templates de `ZABBIX_APM_TEMPLATE`. Pon el nombre exacto del template OTLP de tu Zabbix |
 | Logs de los servicios: `connection refused` / `UNAVAILABLE` hacia `:4317` | El proxy `zabbix-proxy-apm` no está registrado como proxy activo o no tiene *APM → Data collection enabled*; o Fault Shop está en otro servidor y apunta a `host.docker.internal` |
 | No llegan trazas | Revisa `OTEL_EXPORTER_OTLP_ENDPOINT`/`PROTOCOL` (4317 = grpc, 4318 = http/protobuf) y que el receptor sea alcanzable desde la red de Docker. Los logs de cada servicio muestran errores del exporter |

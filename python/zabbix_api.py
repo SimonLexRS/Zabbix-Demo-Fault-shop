@@ -8,6 +8,7 @@ import struct
 import requests
 
 SENDER_TEMPLATE = 'Fault Shop by Zabbix sender'
+KPI_TEMPLATE = 'APM business metrics by ClickHouse HTTP'
 
 IMPORT_RULES = {
 	'template_groups': {'createMissing': True, 'updateExisting': True},
@@ -70,7 +71,7 @@ def template_id(api: Api, name: str):
 def upsert_host(api: Api, host: str, groupid: str, templateid: str, macros=(), tags=(), description='') -> tuple:
 	"""Creates the host, or adds the group and template to the existing one (its other links are kept)."""
 	found = api('host.get', {'filter': {'host': [host]}, 'output': ['hostid'],
-		'selectParentTemplates': ['templateid'], 'selectHostGroups': ['groupid'], 'selectMacros': ['macro', 'value']})
+		'selectParentTemplates': ['templateid'], 'selectHostGroups': ['groupid'], 'selectMacros': ['hostmacroid', 'macro']})
 
 	if not found:
 		hostid = api('host.create', {'host': host, 'name': host, 'description': description,
@@ -87,14 +88,40 @@ def upsert_host(api: Api, host: str, groupid: str, templateid: str, macros=(), t
 	if groupid not in [g['groupid'] for g in groups]:
 		groups.append({'groupid': groupid})
 
-	# Our macros win; macros someone added by hand stay.
-	merged = {m['macro']: m['value'] for m in current.get('macros', [])}
-	merged.update({m['macro']: m['value'] for m in macros})
+	# Our macros win; macros someone added by hand stay (by id, so secret macros keep their hidden value).
+	existing = {m['macro']: m['hostmacroid'] for m in current.get('macros', [])}
+	ours = {m['macro'] for m in macros}
+	keep = [{'hostmacroid': mid} for name, mid in existing.items() if name not in ours] + \
+		[{**m, 'hostmacroid': existing[m['macro']]} if m['macro'] in existing else m for m in macros]
 
-	api('host.update', {'hostid': current['hostid'], 'templates': templates, 'groups': groups,
-		'macros': [{'macro': key, 'value': value} for key, value in merged.items()]})
+	api('host.update', {'hostid': current['hostid'], 'templates': templates, 'groups': groups, 'macros': keep})
 
 	return current['hostid'], 'actualizado'
+
+
+def link_kpis(api: Api, cfg: dict, groupid: str) -> str:
+	"""Business KPIs of the APM-Dashboard module on the APM host: OpenTelemetry metrics read from ClickHouse."""
+	with open(cfg['kpi_template_file'], encoding='utf-8') as file:
+		api('configuration.import', {'format': 'json', 'source': file.read(), 'rules': IMPORT_RULES})
+
+	templateid = template_id(api, KPI_TEMPLATE)
+	if not templateid:
+		return f'template "{KPI_TEMPLATE}" no importado'
+
+	macros = [
+		{'macro': '{$APM.NAMESPACE}', 'value': cfg['namespace']},
+		{'macro': '{$APM.KPI.METRIC.MATCHES}', 'value': cfg['kpi_metric_matches']},
+		{'macro': '{$APM.KPI.TIMEZONE}', 'value': cfg['kpi_timezone']},
+		{'macro': '{$CH.URL}', 'value': cfg['ch_url']},
+		{'macro': '{$CH.DB}', 'value': cfg['ch_db']},
+		{'macro': '{$CH.USER}', 'value': cfg['ch_user']},
+	]
+	if cfg['ch_password']:
+		macros.append({'macro': '{$CH.PASSWORD}', 'value': cfg['ch_password'], 'type': '1'})
+
+	upsert_host(api, cfg['apm_host'], groupid, templateid, macros=macros)
+
+	return f'KPIs enlazados ({cfg["ch_url"]}, usuario {cfg["ch_user"]}' + (', sin contraseña)' if not cfg['ch_password'] else ')')
 
 
 def provision(api: Api, cfg: dict, template_source: str) -> dict:
@@ -136,6 +163,11 @@ def provision(api: Api, cfg: dict, template_source: str) -> dict:
 						f'{cfg["namespace"]}.')
 				result['apm'] = f'host APM {apm_action} con "{chosen["host"]}" y {", ".join(sorted(names))}'
 				result['apm_hostid'] = apm_hostid
+				if cfg.get('kpi_enabled'):
+					try:
+						result['kpi'] = link_kpis(api, cfg, groupid)
+					except (ZabbixError, OSError) as error:
+						result['kpi'] = f'KPIs no enlazados: {error}'
 			except ZabbixError as error:
 				result['apm'] = f'host APM no creado: {error}'
 

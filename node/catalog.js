@@ -65,7 +65,9 @@ app.post('/reserve', async (req, res) => {
 		return res.status(409).json({ error: `Out of stock: ${rows[0]?.name ?? 'product'}` });
 	}
 
-	const items = rows.map((row) => ({ id: row.id, name: row.name, price: row.price, quantity: wanted.get(row.id) }));
+	const items = rows.map((row) => ({
+		id: row.id, name: row.name, category: row.category, price: row.price, quantity: wanted.get(row.id)
+	}));
 	const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
 	res.json({ items, total: Math.round(total * 100) / 100 });

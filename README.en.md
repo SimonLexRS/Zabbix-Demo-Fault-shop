@@ -23,6 +23,12 @@ Only a Zabbix URL and an API token are needed: on start, the `zabbix-bridge` con
 4. *Domains*: service `web`, port `80`. Deploy.
 5. Check the `zabbix-bridge` logs: `Provisión OK` then `Dashboard: … complete: True`.
 
+## Business KPIs and access
+
+The services send OpenTelemetry business metrics (`shop.orders`, `shop.revenue`, `shop.order.amount`, `shop.items.sold`, `shop.orders.failed`, `shop.payments`, `shop.cart.additions`, `shop.emails`). The bridge links the template **APM business metrics by ClickHouse HTTP** to `apm-fault-shop`; set `ZABBIX_CH_USER`/`ZABBIX_CH_PASSWORD` (ClickHouse as seen from the Zabbix server). Dashboard: `python3 scripts/zabbix-apm-app.py kpi-dashboard fault-shop` from [zabbix-apm-dashboard](https://github.com/SimonLexRS/zabbix-apm-dashboard).
+
+Protect the domain with a Traefik `basicAuth` middleware (bcrypt hash, `removeHeader`, HSTS headers, rate limit) attached in *Domains → Middlewares*: see the Spanish README.
+
 ## Docker
 
 ```sh

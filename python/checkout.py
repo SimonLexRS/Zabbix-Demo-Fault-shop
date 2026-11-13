@@ -8,7 +8,7 @@ import psycopg2
 import redis
 import requests
 from flask import Flask, jsonify, request
-from opentelemetry import propagate, trace
+from opentelemetry import metrics, propagate, trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from werkzeug.exceptions import HTTPException
 
@@ -22,6 +22,33 @@ logging.getLogger().setLevel(logging.INFO)
 tracer = trace.get_tracer('checkout')
 queue = redis.Redis(host='redis')
 http = requests.Session()
+CARDS = {'4': 'visa', '5': 'mastercard', '3': 'amex'}
+
+# Business KPIs: what the store sells and why orders fail, by channel, card and category (few known values each).
+meter = metrics.get_meter('checkout')
+orders_placed = meter.create_counter('shop.orders', unit='{order}', description='Orders placed')
+orders_failed = meter.create_counter('shop.orders.failed', unit='{order}', description='Orders that could not be placed')
+revenue = meter.create_counter('shop.revenue', unit='USD', description='Revenue of the orders placed')
+order_amount = meter.create_histogram('shop.order.amount', unit='USD', description='Amount of each order')
+items_sold = meter.create_counter('shop.items.sold', unit='{item}', description='Units sold')
+
+
+def failure_of(error: Exception) -> str:
+	"""Why an order failed, as one of a few business reasons."""
+	text = str(error)
+	if isinstance(error, KeyError):
+		return 'release_defect'
+	if isinstance(error, OrderRejected):
+		return 'out_of_stock' if error.status == 409 else 'rejected'
+	if 'declined' in text:
+		return 'payment_declined'
+	if 'did not answer' in text or 'Timeout' in text:
+		return 'bank_timeout'
+	if 'not reachable' in text:
+		return 'bank_unreachable'
+	if '503' in text or isinstance(error, requests.RequestException):
+		return 'service_down'
+	return 'service_error'
 
 
 class OrderRejected(Exception):
@@ -96,6 +123,17 @@ def bulk_discount(order: dict) -> float:
 @app.post('/orders')
 def orders():
 	body = request.get_json(force=True)
+
+	try:
+		order_id, total = place(body)
+	except Exception as error:
+		orders_failed.add(1, {**attributes_of(body), 'shop.failure': failure_of(error)})
+		raise
+
+	return jsonify(order_id=order_id, total=total)
+
+
+def place(body: dict) -> tuple:
 	span = trace.get_current_span()
 	burn = faults.get()['cpu_burn_ms']
 
@@ -133,4 +171,14 @@ def orders():
 
 	log.info('Order %s placed: %s', order_id, order['total'])
 
-	return jsonify(order_id=order_id, total=order['total'])
+	orders_placed.add(1, attributes_of(body))
+	revenue.add(order['total'], attributes_of(body))
+	order_amount.record(order['total'], attributes_of(body))
+	for item in order['items']:
+		items_sold.add(item['quantity'], {'shop.category': item.get('category', 'unknown')})
+
+	return order_id, order['total']
+
+
+def attributes_of(body: dict) -> dict:
+	return {'shop.channel': body.get('channel', 'web'), 'payment.card_type': CARDS.get(str(body.get('card', ''))[:1], 'unknown')}
